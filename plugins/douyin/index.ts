@@ -818,7 +818,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         audioPath,
-      ]);
+      ], { timeout: 30000 });
       let out = '';
       ffprobe.stdout.on('data', (d) => { out += d.toString(); });
       ffprobe.on('close', () => {
@@ -834,7 +834,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
    */
   private spawnAsync(cmd: string, args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn(cmd, args);
+      const child = spawn(cmd, args, { timeout: 300000 });
       let stderr = '';
       child.stderr.on('data', (d) => { stderr += d.toString(); });
       child.on('close', (code) => {

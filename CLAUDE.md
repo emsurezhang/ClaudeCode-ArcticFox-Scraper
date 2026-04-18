@@ -63,10 +63,10 @@ Below is a prioritized inventory of known problems identified during codebase re
 
 ### Critical (Security / Stability)
 
-1. **No authentication by default** — `config.json` ships with `"token": ""`, which disables auth entirely. The API starts exposed to anyone who can reach the port.
-2. **Permissive CORS** — `src/core/server.ts:87` sets `origin: true`, allowing cross-origin requests from any domain.
-3. **No spawn timeouts** — `yt-dlp`, `ffmpeg`, and `ffprobe` are spawned without timeout wrappers. If the external binary hangs, the request hangs forever.
-4. **No input validation on `/api/scrape`** — The endpoint accepts arbitrary request bodies. No limit on `urls` array length, no URL format validation, and no validation of numeric fields like `maxItems` or `timeout`.
+1. ✅ **No authentication by default** — `config.json` still ships with `"token": ""`, but the server now prints a prominent startup warning when auth is disabled. The empty-string behavior is preserved as an intentional "disable auth" signal.
+2. ✅ **Permissive CORS** — Fixed: `src/core/server.ts` now defaults CORS to `origin: false` (no cross-origin requests). Set `corsOrigin` in `config.json` to enable specific origins.
+3. ✅ **No spawn timeouts** — Fixed: all `yt-dlp`, `ffmpeg`, `ffprobe`, and `whisper-cli` spawns now have `timeout` values (30s–5min depending on expected duration).
+4. ✅ **No input validation on `/api/scrape`** — Fixed: the endpoint now validates `urls` count (max 50), URL format (must be http/https), and numeric options (`maxItems` 1–1000, `timeout` 1000–300000ms, `scrollStrategy` must be min/max/all).
 
 ### High (Reliability / Performance)
 

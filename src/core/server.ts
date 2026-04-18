@@ -83,9 +83,10 @@ async function main() {
     logger: false
   });
 
-  // 注册 CORS
+  // 注册 CORS — 默认不允许跨域，可通过 config.corsOrigin 配置
+  const corsOrigin = (config as any).corsOrigin ?? false;
   await app.register(cors, {
-    origin: true
+    origin: corsOrigin
   });
 
   // 注册认证中间件
@@ -122,12 +123,64 @@ async function main() {
   app.post('/api/scrape', async (request, reply) => {
     const body = request.body as ScrapeRequest;
 
+    // 验证 urls 字段
     if (!body.urls || !Array.isArray(body.urls) || body.urls.length === 0) {
       reply.code(400);
       return {
         success: false,
         error: 'Missing or invalid "urls" field'
       };
+    }
+
+    if (body.urls.length > 50) {
+      reply.code(400);
+      return {
+        success: false,
+        error: 'Too many URLs (max 50)'
+      };
+    }
+
+    // 验证每个 URL 格式
+    for (const url of body.urls) {
+      if (typeof url !== 'string') {
+        reply.code(400);
+        return { success: false, error: `Invalid URL type: ${typeof url}` };
+      }
+      try {
+        const parsed = new URL(url);
+        if (!parsed.protocol.startsWith('http')) {
+          reply.code(400);
+          return { success: false, error: `URL must use http/https: ${url}` };
+        }
+      } catch {
+        reply.code(400);
+        return { success: false, error: `Invalid URL format: ${url}` };
+      }
+    }
+
+    // 验证 options 字段
+    if (body.options) {
+      if (body.options.maxItems !== undefined) {
+        const n = body.options.maxItems;
+        if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 1000) {
+          reply.code(400);
+          return { success: false, error: 'Invalid maxItems (must be integer 1-1000)' };
+        }
+      }
+      if (body.options.timeout !== undefined) {
+        const t = body.options.timeout;
+        if (typeof t !== 'number' || !Number.isInteger(t) || t < 1000 || t > 300000) {
+          reply.code(400);
+          return { success: false, error: 'Invalid timeout (must be integer 1000-300000ms)' };
+        }
+      }
+      if (body.options.scrollStrategy !== undefined) {
+        const s = body.options.scrollStrategy;
+        if (!['min', 'max', 'all'].includes(s)) {
+          reply.code(400);
+          return { success: false, error: 'Invalid scrollStrategy (must be min/max/all)' };
+        }
+      }
     }
 
     // 合并选项，传入 debug 模式
@@ -179,6 +232,9 @@ async function main() {
   // 启动服务器
   try {
     await app.listen({ port: config.port, host: '0.0.0.0' });
+      if (!config.auth?.token) {
+      console.warn('[Server] WARNING: API authentication is disabled. Set auth.token in config.json to secure the server.');
+    }
     console.log(`[Server] Running on http://localhost:${config.port}`);
     console.log(`[Server] Plugins directory: ${pluginsDir}`);
     console.log(`[Server] Hot reload: ${config.hotReload ? 'enabled' : 'disabled'}`);

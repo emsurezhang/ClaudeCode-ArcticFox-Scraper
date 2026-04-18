@@ -163,6 +163,7 @@ export class WhisperTranscriber {
         audioPath,
       ], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 30000,
       });
 
       let output = '';
@@ -205,6 +206,7 @@ export class WhisperTranscriber {
         convertedPath,
       ], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 120000,
       });
 
       let convertStderr = '';
@@ -234,6 +236,7 @@ export class WhisperTranscriber {
           outputPattern,
         ], {
           stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 120000,
         });
 
         let splitStderr = '';

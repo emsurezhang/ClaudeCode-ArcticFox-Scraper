@@ -182,6 +182,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
 
       const proc = spawn('yt-dlp', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 120000,
       });
 
       let output = '';
@@ -248,6 +249,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
         url,
       ], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
       });
 
       let output = '';
@@ -303,6 +305,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
         url,
       ], {
         stdio: 'ignore',
+        timeout: 300000,
       });
 
       proc.on('close', (code) => {

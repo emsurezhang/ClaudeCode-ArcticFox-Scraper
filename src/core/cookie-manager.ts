@@ -104,7 +104,8 @@ export class CookieManager implements ICookieManager {
         '--print', 'cookies',
         'https://www.youtube.com/robots.txt'  // 随便一个 URL 触发 cookie 提取
       ], {
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
       });
 
       let stderr = '';
