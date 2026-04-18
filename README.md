@@ -42,7 +42,7 @@ GET /health
 GET /api/plugins
 ```
 
-### 刮削内容
+### 创建刮削任务（异步）
 ```bash
 POST /api/scrape
 Content-Type: application/json
@@ -63,6 +63,40 @@ Content-Type: application/json
   }
 }
 ```
+
+**返回示例（HTTP 202 Accepted）：**
+```json
+{
+  "jobId": "l3x9v1p9-qwerty",
+  "status": "pending",
+  "message": "Job accepted, use GET /api/jobs/:jobId to poll status"
+}
+```
+
+### 查询任务状态
+```bash
+GET /api/jobs/:jobId
+```
+
+**返回示例：**
+```json
+{
+  "jobId": "l3x9v1p9-qwerty",
+  "status": "completed",
+  "progress": { "total": 2, "done": 2 },
+  "createdAt": "2026-04-19T10:00:00.000Z",
+  "updatedAt": "2026-04-19T10:02:30.000Z",
+  "completedAt": "2026-04-19T10:02:30.000Z",
+  "results": [ { ...ScrapeResult } ],
+  "errors": [ { "url": "...", "error": "..." } ]
+}
+```
+
+**状态说明：**
+- `pending` — 任务已创建，等待执行
+- `running` — 正在刮削中
+- `completed` — 全部完成
+- `failed` — 任务失败（如并发超限）
 
 ### 模式说明
 

@@ -207,6 +207,20 @@ export interface PluginsResponse {
   }[];
 }
 
+/** 异步刮削任务 */
+export interface ScrapeJob {
+  id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  urls: string[];
+  options: ScrapeOptions;
+  results: ScrapeResult[];
+  errors: { url: string; error: string }[];
+  progress: { total: number; done: number };
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
 /** 错误类型 */
 export type ScrapeErrorType =
   | 'UNSUPPORTED_PLATFORM'

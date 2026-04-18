@@ -9,8 +9,9 @@ import { readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { PluginManager } from './plugin-manager.js';
 import { CookieManager } from './cookie-manager.js';
+import { JobManager } from './job-manager.js';
 import { createAuthMiddleware } from '../utils/auth.js';
-import type { ServerConfig, ScrapeRequest, ScrapeResponse, ScrapeResult } from '../interfaces/index.js';
+import type { ServerConfig, ScrapeRequest } from '../interfaces/index.js';
 
 // 解析命令行参数
 const args = process.argv.slice(2);
@@ -78,6 +79,12 @@ async function main() {
     console.warn('[Server] Failed to load plugins:', err);
   }
 
+  // 初始化任务管理器
+  const jobManager = new JobManager(
+    { pluginManager, cookieManager },
+    10
+  );
+
   // 创建 Fastify 实例
   const app = Fastify({
     logger: false
@@ -119,25 +126,19 @@ async function main() {
     }
   });
 
-  // 核心刮削端点
+  // 创建异步刮削任务
   app.post('/api/scrape', async (request, reply) => {
     const body = request.body as ScrapeRequest;
 
     // 验证 urls 字段
     if (!body.urls || !Array.isArray(body.urls) || body.urls.length === 0) {
       reply.code(400);
-      return {
-        success: false,
-        error: 'Missing or invalid "urls" field'
-      };
+      return { success: false, error: 'Missing or invalid "urls" field' };
     }
 
     if (body.urls.length > 50) {
       reply.code(400);
-      return {
-        success: false,
-        error: 'Too many URLs (max 50)'
-      };
+      return { success: false, error: 'Too many URLs (max 50)' };
     }
 
     // 验证每个 URL 格式
@@ -186,80 +187,38 @@ async function main() {
     // 合并选项，传入 debug 模式
     const options = { ...config.defaultOptions, ...body.options, debug: isDebugMode };
 
-    const results: ScrapeResult[] = [];
-    const errors: { url: string; error: string }[] = [];
+    // 创建异步任务
+    const job = jobManager.createJob(body.urls, options);
+    jobManager.startJob(job.id);
 
-    // 判断是否可以并行：list 模式（纯 Playwright）可以并行；detail 含 Whisper 保持串行
-    const isListMode = options.mode === 'list';
+    reply.code(202); // Accepted
+    return {
+      jobId: job.id,
+      status: job.status,
+      message: 'Job accepted, use GET /api/jobs/:jobId to poll status',
+    };
+  });
 
-    if (isListMode) {
-      // list 模式：并行处理所有 URL
-      console.log(`[Server] List mode: processing ${body.urls.length} URLs in parallel`);
-      const scrapePromises = body.urls.map(async (url) => {
-        try {
-          const plugin = pluginManager.findPluginForUrl(url);
-          if (!plugin) {
-            return { type: 'error' as const, url, error: 'Unsupported platform' };
-          }
+  // 查询任务状态
+  app.get('/api/jobs/:jobId', async (request, reply) => {
+    const { jobId } = request.params as { jobId: string };
+    const job = jobManager.getJob(jobId);
 
-          console.log(`[Server] Scraping ${url} with ${plugin.name} plugin`);
-
-          if (plugin.capabilities.scrapeMetadata || plugin.capabilities.scrapeContent) {
-            await cookieManager.getOrExtract(plugin.name, options.browser || 'chrome');
-          }
-
-          const result = await plugin.scrape(url, options);
-          return { type: 'result' as const, result };
-        } catch (err) {
-          console.error(`[Server] Failed to scrape ${url}:`, err);
-          return { type: 'error' as const, url, error: err instanceof Error ? err.message : 'Unknown error' };
-        }
-      });
-
-      const settled = await Promise.all(scrapePromises);
-      for (const item of settled) {
-        if (item.type === 'result') {
-          results.push(item.result);
-        } else {
-          errors.push({ url: item.url, error: item.error });
-        }
-      }
-    } else {
-      // detail 模式：串行处理（Whisper 等重资源操作不宜并发）
-      for (const url of body.urls) {
-        try {
-          const plugin = pluginManager.findPluginForUrl(url);
-
-          if (!plugin) {
-            errors.push({ url, error: 'Unsupported platform' });
-            continue;
-          }
-
-          console.log(`[Server] Scraping ${url} with ${plugin.name} plugin`);
-
-          if (plugin.capabilities.scrapeMetadata || plugin.capabilities.scrapeContent) {
-            await cookieManager.getOrExtract(plugin.name, options.browser || 'chrome');
-          }
-
-          const result = await plugin.scrape(url, options);
-          results.push(result);
-        } catch (err) {
-          console.error(`[Server] Failed to scrape ${url}:`, err);
-          errors.push({
-            url,
-            error: err instanceof Error ? err.message : 'Unknown error'
-          });
-        }
-      }
+    if (!job) {
+      reply.code(404);
+      return { success: false, error: 'Job not found' };
     }
 
-    const response: ScrapeResponse = {
-      success: errors.length === 0,
-      results,
-      errors: errors.length > 0 ? errors : undefined
+    return {
+      jobId: job.id,
+      status: job.status,
+      progress: job.progress,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      completedAt: job.completedAt,
+      results: job.results,
+      errors: job.errors.length > 0 ? job.errors : undefined,
     };
-
-    return response;
   });
 
   // 启动服务器
@@ -276,6 +235,18 @@ async function main() {
     console.error('[Server] Failed to start:', err);
     process.exit(1);
   }
+
+  // 优雅关闭
+  const gracefulShutdown = async (signal: string) => {
+    console.log(`[Server] Received ${signal}, shutting down gracefully...`);
+    jobManager.destroy();
+    pluginManager.unwatch();
+    await app.close();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
 main().catch(console.error);
