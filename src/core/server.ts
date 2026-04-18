@@ -189,34 +189,67 @@ async function main() {
     const results: ScrapeResult[] = [];
     const errors: { url: string; error: string }[] = [];
 
-    // 处理每个 URL
-    for (const url of body.urls) {
-      try {
-        // 查找匹配的插件
-        const plugin = pluginManager.findPluginForUrl(url);
+    // 判断是否可以并行：list 模式（纯 Playwright）可以并行；detail 含 Whisper 保持串行
+    const isListMode = options.mode === 'list';
 
-        if (!plugin) {
-          errors.push({ url, error: 'Unsupported platform' });
-          continue;
+    if (isListMode) {
+      // list 模式：并行处理所有 URL
+      console.log(`[Server] List mode: processing ${body.urls.length} URLs in parallel`);
+      const scrapePromises = body.urls.map(async (url) => {
+        try {
+          const plugin = pluginManager.findPluginForUrl(url);
+          if (!plugin) {
+            return { type: 'error' as const, url, error: 'Unsupported platform' };
+          }
+
+          console.log(`[Server] Scraping ${url} with ${plugin.name} plugin`);
+
+          if (plugin.capabilities.scrapeMetadata || plugin.capabilities.scrapeContent) {
+            await cookieManager.getOrExtract(plugin.name, options.browser || 'chrome');
+          }
+
+          const result = await plugin.scrape(url, options);
+          return { type: 'result' as const, result };
+        } catch (err) {
+          console.error(`[Server] Failed to scrape ${url}:`, err);
+          return { type: 'error' as const, url, error: err instanceof Error ? err.message : 'Unknown error' };
         }
+      });
 
-        console.log(`[Server] Scraping ${url} with ${plugin.name} plugin`);
-
-        // 如果插件需要 cookies，提前准备好
-        if (plugin.capabilities.scrapeMetadata || plugin.capabilities.scrapeContent) {
-          // 提前获取 cookies（如果需要）
-          await cookieManager.getOrExtract(plugin.name, options.browser || 'chrome');
+      const settled = await Promise.all(scrapePromises);
+      for (const item of settled) {
+        if (item.type === 'result') {
+          results.push(item.result);
+        } else {
+          errors.push({ url: item.url, error: item.error });
         }
+      }
+    } else {
+      // detail 模式：串行处理（Whisper 等重资源操作不宜并发）
+      for (const url of body.urls) {
+        try {
+          const plugin = pluginManager.findPluginForUrl(url);
 
-        // 执行刮削
-        const result = await plugin.scrape(url, options);
-        results.push(result);
-      } catch (err) {
-        console.error(`[Server] Failed to scrape ${url}:`, err);
-        errors.push({
-          url,
-          error: err instanceof Error ? err.message : 'Unknown error'
-        });
+          if (!plugin) {
+            errors.push({ url, error: 'Unsupported platform' });
+            continue;
+          }
+
+          console.log(`[Server] Scraping ${url} with ${plugin.name} plugin`);
+
+          if (plugin.capabilities.scrapeMetadata || plugin.capabilities.scrapeContent) {
+            await cookieManager.getOrExtract(plugin.name, options.browser || 'chrome');
+          }
+
+          const result = await plugin.scrape(url, options);
+          results.push(result);
+        } catch (err) {
+          console.error(`[Server] Failed to scrape ${url}:`, err);
+          errors.push({
+            url,
+            error: err instanceof Error ? err.message : 'Unknown error'
+          });
+        }
       }
     }
 

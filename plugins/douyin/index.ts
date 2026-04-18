@@ -6,7 +6,7 @@
 
 import { spawn } from 'child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { mkdir, readFile, unlink, stat } from 'fs/promises';
+import { mkdir, readFile, unlink, stat, rm } from 'fs/promises';
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 import type {
@@ -317,6 +317,14 @@ export default class DouYinPlugin implements IPlatformPlugin {
       console.error('[DouYin] Failed to capture audio:', err);
     }
 
+    const shouldKeepAudio = options.downloadAudio;
+    if (!shouldKeepAudio && audioPath) {
+      await unlink(audioPath).catch(() => {});
+      // 清理整个视频临时目录（包含 WAV、SRT 等中间文件）
+      await rm(outputDir, { recursive: true, force: true }).catch(() => {});
+      console.log(`[DouYin] Cleaned up temp files in ${outputDir}`);
+    }
+
     return {
       url,
       platform: this.name,
@@ -326,7 +334,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
       publishedAt: metadata.publishedAt,
       transcript,
       transcriptLanguage,
-      audioPath: options.downloadAudio ? audioPath : undefined,
+      audioPath: shouldKeepAudio ? audioPath : undefined,
       metadata: {
         duration: metadata.duration,
         coverUrl: metadata.coverUrl,

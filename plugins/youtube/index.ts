@@ -12,7 +12,7 @@
  */
 
 import { spawn } from 'child_process';
-import { mkdir } from 'fs/promises';
+import { mkdir, unlink } from 'fs/promises';
 import { join } from 'path';
 import type {
   IPlatformPlugin,
@@ -144,6 +144,13 @@ export default class YouTubePlugin implements IPlatformPlugin {
       }
     }
 
+    // 如果不需要保留音频文件，清理临时文件
+    const shouldKeepAudio = options.downloadAudio;
+    if (!shouldKeepAudio && audioPath) {
+      await unlink(audioPath).catch(() => {});
+      console.log(`[YouTube] Cleaned up temp audio: ${audioPath}`);
+    }
+
     return {
       url,
       platform: this.name,
@@ -153,7 +160,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
       publishedAt: metadata.publishedAt,
       transcript,
       transcriptLanguage,
-      audioPath: options.downloadAudio ? audioPath : undefined,
+      audioPath: shouldKeepAudio ? audioPath : undefined,
       metadata: {
         mode: 'detail',
         duration: metadata.duration,

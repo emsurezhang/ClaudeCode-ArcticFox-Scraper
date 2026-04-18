@@ -70,10 +70,10 @@ Below is a prioritized inventory of known problems identified during codebase re
 
 ### High (Reliability / Performance)
 
-5. **LinkedIn plugin lacks cookie injection** — Unlike DouYin and X, it does not load cached cookies, so authenticated content cannot be scraped.
-6. **X plugin hardcodes a 30-second wait** — `plugins/x/index.ts:293` unconditionally waits 30 s after finding the primary column, making every scrape take at least 30 s.
-7. **URLs scraped sequentially** — `src/core/server.ts:140-168` loops over URLs in a `for...of`. Total time scales linearly with URL count.
-8. **Temporary files never cleaned up** — Audio and subtitle files in `cache/temp/` accumulate indefinitely. YouTube and DouYin plugins never delete downloaded media.
+5. **LinkedIn plugin lacks cookie injection** — Unlike DouYin and X, it does not load cached cookies, so authenticated content cannot be scraped. *(Low priority — plugin is unused.)*
+6. **X plugin hardcodes a 30-second wait** — `plugins/x/index.ts:293` unconditionally waits 30 s after finding the primary column, making every scrape take at least 30 s. *(Kept intentionally — required for high-latency networks such as China.)*
+7. ✅ **URLs scraped sequentially** — Fixed: `src/core/server.ts` now processes `mode: 'list'` URLs in parallel via `Promise.all`, while `mode: 'detail'` (which may invoke Whisper) remains sequential to avoid resource contention.
+8. ✅ **Temporary files never cleaned up** — Fixed: YouTube and DouYin detail modes now delete downloaded audio and intermediate files (WAV, SRT) when `downloadAudio` is `false`.
 
 ### Medium (Maintainability)
 
