@@ -1,0 +1,39 @@
+{
+  "name": "social-media-scraper-api",
+  "version": "1.0.0",
+  "description": "API server for scraping social media content with plugin support",
+  "main": "src/core/server.ts",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/core/server.ts",
+    "dev": "tsx watch src/core/server.ts",
+    "build": "tsc",
+    "clean": "rm -rf dist cache"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "axios": "^1.15.0",
+    "chokidar": "^3.6.0",
+    "commander": "^12.1.0",
+    "fastify": "^4.28.1",
+    "openai": "^4.67.1",
+    "playwright": "^1.59.1",
+    "yt-dlp-wrap": "^2.3.12"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.2"
+  },
+  "keywords": [
+    "scraper",
+    "api",
+    "youtube",
+    "twitter",
+    "linkedin",
+    "douyin",
+    "plugin"
+  ],
+  "author": "",
+  "license": "MIT"
+}

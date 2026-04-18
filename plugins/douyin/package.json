@@ -1,0 +1,15 @@
+{
+  "name": "scraper-plugin-douyin",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "plugin": {
+    "name": "douyin",
+    "hostnames": ["douyin.com", "www.douyin.com", "v.douyin.com"],
+    "capabilities": {
+      "scrapeMetadata": true,
+      "scrapeContent": true,
+      "downloadAudio": true,
+      "extractTranscript": true
+    }
+  }
+}

@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Cache & temp files (cookies, audio, transcripts)
+cache/
+
+# Whisper models (large binary files, download separately)
+models/
+
+# OS files
+.DS_Store
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Local config (may contain secrets)
+config.json

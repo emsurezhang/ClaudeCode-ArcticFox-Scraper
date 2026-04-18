@@ -1,0 +1,15 @@
+{
+  "name": "scraper-plugin-youtube",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "plugin": {
+    "name": "youtube",
+    "hostnames": ["youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"],
+    "capabilities": {
+      "scrapeMetadata": true,
+      "scrapeContent": true,
+      "downloadAudio": true,
+      "extractTranscript": true
+    }
+  }
+}
