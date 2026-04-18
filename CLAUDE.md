@@ -57,6 +57,38 @@ Plugins that need authenticated sessions (e.g., DouYin, X) typically:
 - **`ffmpeg`** — Required by WhisperTranscriber for audio conversion and splitting.
 - **`playwright`** — Used by DouYin, X, and LinkedIn plugins for browser-based scraping.
 
+## Known Issues & Technical Debt
+
+Below is a prioritized inventory of known problems identified during codebase review. These should be checked before claiming the codebase is "production-ready".
+
+### Critical (Security / Stability)
+
+1. **No authentication by default** — `config.json` ships with `"token": ""`, which disables auth entirely. The API starts exposed to anyone who can reach the port.
+2. **Permissive CORS** — `src/core/server.ts:87` sets `origin: true`, allowing cross-origin requests from any domain.
+3. **No spawn timeouts** — `yt-dlp`, `ffmpeg`, and `ffprobe` are spawned without timeout wrappers. If the external binary hangs, the request hangs forever.
+4. **No input validation on `/api/scrape`** — The endpoint accepts arbitrary request bodies. No limit on `urls` array length, no URL format validation, and no validation of numeric fields like `maxItems` or `timeout`.
+
+### High (Reliability / Performance)
+
+5. **LinkedIn plugin lacks cookie injection** — Unlike DouYin and X, it does not load cached cookies, so authenticated content cannot be scraped.
+6. **X plugin hardcodes a 30-second wait** — `plugins/x/index.ts:293` unconditionally waits 30 s after finding the primary column, making every scrape take at least 30 s.
+7. **URLs scraped sequentially** — `src/core/server.ts:140-168` loops over URLs in a `for...of`. Total time scales linearly with URL count.
+8. **Temporary files never cleaned up** — Audio and subtitle files in `cache/temp/` accumulate indefinitely. YouTube and DouYin plugins never delete downloaded media.
+
+### Medium (Maintainability)
+
+9. **Heavy use of `any`** — 30+ occurrences across plugins, especially the X plugin where `Page` and `BrowserContext` are typed as `any`.
+10. **Silent empty catch blocks** — 20+ `} catch { }` patterns swallow errors, making debugging difficult.
+11. **Brittle DOM selectors** — DouYin uses obfuscated CSS class names (e.g., `.lC6iS6Aq`) and X relies on `data-testid` attributes that change frequently.
+12. **No tests, linter, or formatter configured** — `package.json` has no `test` script and no dev tooling for code quality.
+
+### Low (Observability / Polish)
+
+13. **Unstructured logging** — Uses `console.log`/`console.error` everywhere instead of a structured logger with levels.
+14. **README is entirely in Chinese** — Limits accessibility for non-Chinese-speaking contributors.
+15. **No graceful shutdown** — `SIGTERM`/`SIGINT` handlers are missing; in-flight requests and browser instances are not cleaned up on exit.
+16. **No dependency health checks** — Server startup does not verify that `yt-dlp`, `whisper-cli`, or `ffmpeg` are installed and working.
+
 ## Important Notes
 
 - The project is **ESM only** (`"type": "module"`). Dynamic imports use `pathToFileURL()`.
