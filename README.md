@@ -132,6 +132,69 @@ curl -X POST http://localhost:3000/api/scrape \
   }'
 ```
 
+### 响应格式
+
+`POST /api/scrape` 返回统一的 JSON 结构：
+
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "url": "原始请求URL",
+      "platform": "平台标识 (youtube | douyin | x)",
+      "title": "内容标题",
+      "author": "作者/发布者",
+      "description": "内容描述",
+      "publishedAt": "ISO 8601 发布时间",
+      "content": "正文内容（推文/帖子正文）",
+      "transcript": "字幕/转录文本",
+      "transcriptLanguage": "字幕语言代码",
+      "audioPath": "本地音频文件路径（如已下载）",
+      "metadata": {},
+      "scrapedAt": "ISO 8601 刮削时间"
+    }
+  ],
+  "errors": [
+    {
+      "url": "失败的URL",
+      "error": "错误描述"
+    }
+  ]
+}
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 说明 | 必返 |
+|------|------|------|------|
+| `success` | boolean | 是否全部成功（任一失败即为 false） | 是 |
+| `results` | ScrapeResult[] | 成功的刮削结果数组 | 是 |
+| `errors` | {url, error}[] | 失败的 URL 及错误信息 | 否 |
+| `url` | string | 原始请求的 URL | 是 |
+| `platform` | string | 平台名称：`youtube`、`douyin`、`x` | 是 |
+| `title` | string | 内容标题（视频标题、推文首行等） | 否 |
+| `author` | string | 作者/频道/博主名称 | 否 |
+| `description` | string | 内容描述（抖音视频文案、YouTube 描述等） | 否 |
+| `publishedAt` | string | 发布时间（ISO 8601 格式） | 否 |
+| `content` | string | 正文内容（list 模式下为摘要统计） | 否 |
+| `transcript` | string | 音频转录字幕文本（需 `extractTranscript: true`） | 否 |
+| `transcriptLanguage` | string | 字幕语言（如 `zh`、`en`） | 否 |
+| `audioPath` | string | 本地音频文件绝对路径（需 `downloadAudio: true`） | 否 |
+| `metadata` | object | 平台特定扩展数据（见下方各平台说明） | 否 |
+| `scrapedAt` | string | 刮削完成时间（ISO 8601） | 是 |
+
+**`metadata` 平台差异：**
+
+| 平台 | mode | metadata 结构 |
+|------|------|--------------|
+| YouTube | detail | `{ mode: 'detail', duration: number, viewCount: number, likeCount: number, thumbnail: string }` |
+| YouTube | list | `{ mode: 'list', totalVideos: number, videos: [{ title, url, duration, viewCount, publishedAt }] }` |
+| DouYin | detail | `{ mode: 'detail', duration: number, coverUrl: string }` |
+| DouYin | list | `{ mode: 'list', totalVideos: number, videos: [{ title, url, coverUrl }] }` — **无 `publishedAt`** |
+| X | detail | `{ mode: 'detail', totalTweets: number, scrollStrategy: string, likes: number, reposts: number, replies: number, thread: TweetData[] }` |
+| X | list | `{ mode: 'list', totalTweets: number, tweets: [{ author, content, publishedAt, likes, reposts }] }` |
+
 ### 热重载插件
 ```bash
 POST /api/plugins/:name/reload
