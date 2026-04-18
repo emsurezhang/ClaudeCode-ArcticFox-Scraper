@@ -5,7 +5,7 @@
 ## 功能特性
 
 - **插件化架构**：每个平台作为独立插件，支持动态热加载
-- **平台支持**：YouTube、抖音（音频+字幕）、X/Twitter、LinkedIn（仅内容）
+- **平台支持**：YouTube、抖音（音频+字幕）、X/Twitter
 - **Cookies 缓存**：从系统浏览器提取的 cookies 自动缓存，失效后重新获取
 - **可配置认证**：API Token 可选，为空时无需认证
 
@@ -28,7 +28,7 @@ npm run dev -- --debug
 
 服务器默认运行在 `http://localhost:3000`
 
-**调试模式 (`--debug`)**: 在调试模式下，Playwright 打开的浏览器窗口会显示在屏幕上（非 headless 模式），操作也会放慢以便观察。这对于排查 X/Twitter、LinkedIn 等需要 JavaScript 渲染的平台的刮削问题非常有用。
+**调试模式 (`--debug`)**: 在调试模式下，Playwright 打开的浏览器窗口会显示在屏幕上（非 headless 模式），操作也会放慢以便观察。这对于排查 X/Twitter 等需要 JavaScript 渲染的平台的刮削问题非常有用。
 
 ## API 端点
 
@@ -224,8 +224,7 @@ brew install ffmpeg
 ├── plugins/               # 插件目录
 │   ├── youtube/
 │   ├── douyin/
-│   ├── x/
-│   └── linkedin/
+│   └── x/
 ├── models/                # Whisper 模型文件
 │   └── ggml-base.bin
 ├── cache/                 # 缓存目录

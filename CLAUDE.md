@@ -14,7 +14,7 @@ There is **no test framework, linter, or formatter** configured in this project.
 
 ## Architecture Overview
 
-This is a **Fastify-based API server** for scraping social media content. It uses a **plugin architecture** where each platform (YouTube, DouYin, X/Twitter, LinkedIn) is a dynamically loaded plugin.
+This is a **Fastify-based API server** for scraping social media content. It uses a **plugin architecture** where each platform (YouTube, DouYin, X/Twitter) is a dynamically loaded plugin.
 
 ### Core Modules
 
@@ -55,7 +55,7 @@ Plugins that need authenticated sessions (e.g., DouYin, X) typically:
 - **`yt-dlp`** — Used by YouTube plugin for audio/video download and by `CookieManager` for cookie extraction.
 - **`whisper-cli`** (from `whisper.cpp` or Homebrew `whisper-cpp`) — Used for local audio transcription.
 - **`ffmpeg`** — Required by WhisperTranscriber for audio conversion and splitting.
-- **`playwright`** — Used by DouYin, X, and LinkedIn plugins for browser-based scraping.
+- **`playwright`** — Used by DouYin and X plugins for browser-based scraping.
 
 ## Known Issues & Technical Debt
 
@@ -70,7 +70,6 @@ Below is a prioritized inventory of known problems identified during codebase re
 
 ### High (Reliability / Performance)
 
-5. **LinkedIn plugin lacks cookie injection** — Unlike DouYin and X, it does not load cached cookies, so authenticated content cannot be scraped. *(Low priority — plugin is unused.)*
 6. **X plugin hardcodes a 30-second wait** — `plugins/x/index.ts:293` unconditionally waits 30 s after finding the primary column, making every scrape take at least 30 s. *(Kept intentionally — required for high-latency networks such as China.)*
 7. ✅ **URLs scraped sequentially** — Fixed: `src/core/server.ts` now processes `mode: 'list'` URLs in parallel via `Promise.all`, while `mode: 'detail'` (which may invoke Whisper) remains sequential to avoid resource contention.
 8. ✅ **Temporary files never cleaned up** — Fixed: YouTube and DouYin detail modes now delete downloaded audio and intermediate files (WAV, SRT) when `downloadAudio` is `false`.
