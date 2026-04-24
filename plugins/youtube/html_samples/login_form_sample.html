@@ -1,0 +1,39 @@
+<!--
+  YouTube 未登录状态 HTML 特征样本
+  ===================================
+  当 cookies 失效时，YouTube 会呈现以下 DOM 特征之一。
+  代码通过检测这些特征判断登录已失效，并自动触发 cookie 刷新 + 重试流程。
+
+  检测逻辑（plugins/youtube/index.ts → getPlaylistVideos）：
+    1. window.location.href.includes('accounts.google.com')   — 被重定向到 Google 登录页
+    2. document.querySelector('#identifierId')                 — Google 邮箱输入框
+    3. document.querySelector('ytd-signin-renderer')           — YouTube 内嵌登录组件
+    4. document.querySelector('yt-upsell-dialog-renderer')     — YouTube 付费/登录弹窗
+    5. a[href*="accounts.google.com/ServiceLogin"]             — 顶栏"登录"链接
+    6. a.yt-spec-button-shape-next--outline                    — 顶栏"登录"按钮样式
+-->
+
+<!-- ① Google 账户登录页（被重定向后的 URL 示例） -->
+<!-- URL: https://accounts.google.com/ServiceLogin?service=youtube&... -->
+
+<!-- ② YouTube 顶栏"登录"按钮（未登录时出现） -->
+<ytd-button-renderer class="style-scope ytd-masthead">
+  <a class="yt-spec-button-shape-next yt-spec-button-shape-next--outline"
+     href="https://accounts.google.com/ServiceLogin?passive=true&service=youtube">
+    登录
+  </a>
+</ytd-button-renderer>
+
+<!-- ③ YouTube 内嵌登录组件（部分页面会直接在页内显示） -->
+<ytd-signin-renderer class="style-scope ytd-app">
+  <!-- 内含 Google 登录表单 -->
+</ytd-signin-renderer>
+
+<!-- ④ Google 邮箱输入框（跳转到 accounts.google.com 后） -->
+<input type="email" id="identifierId" name="identifier"
+       aria-label="电子邮件地址或电话号码" />
+
+<!-- ⑤ YouTube 付费/登录弹窗（某些受限内容触发） -->
+<yt-upsell-dialog-renderer class="style-scope ytd-app">
+  <!-- 包含"登录"或"订阅"按钮 -->
+</yt-upsell-dialog-renderer>

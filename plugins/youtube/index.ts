@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'child_process';
+import { readFileSync } from 'fs';
 import { mkdir, unlink, rename } from 'fs/promises';
 import { join, resolve, basename } from 'path';
 import type {
@@ -20,6 +21,21 @@ import type {
   ScrapeOptions,
 } from '../../src/interfaces/index.js';
 import { WhisperTranscriber } from '../../src/utils/whisper-transcriber.js';
+
+interface YouTubePluginConfig {
+  /** 页面初始加载等待时间（毫秒） */
+  pageLoadWaitMs: number;
+  /** Cookie 刷新后重新验证登录的等待时间（毫秒） */
+  loginCheckRetryWaitMs: number;
+  /** 滚动后等待页面高度变化的超时时间（毫秒） */
+  scrollHeightChangeTimeoutMs: number;
+  /** 页面高度变化后的额外稳定等待时间（毫秒） */
+  scrollSettleWaitMs: number;
+  /** 分段滚动时每步之间的间隔时间（毫秒） */
+  scrollStepIntervalMs: number;
+  /** 连续无新内容多少次后停止滚动 */
+  maxNoNewContentStreak: number;
+}
 
 interface YouTubeScrapeOptions extends ScrapeOptions {
   mode?: 'list' | 'detail';
@@ -73,9 +89,30 @@ export default class YouTubePlugin implements IPlatformPlugin {
   };
 
   private tempDir = './cache/temp';
+  private config: YouTubePluginConfig;
 
   constructor() {
     mkdir(this.tempDir, { recursive: true }).catch((err) => console.warn('[YouTube] Warning:', err));
+    this.config = this.loadConfig();
+  }
+
+  private loadConfig(): YouTubePluginConfig {
+    const defaults: YouTubePluginConfig = {
+      pageLoadWaitMs: 6000,
+      loginCheckRetryWaitMs: 5000,
+      scrollHeightChangeTimeoutMs: 6000,
+      scrollSettleWaitMs: 1500,
+      scrollStepIntervalMs: 150,
+      maxNoNewContentStreak: 3,
+    };
+    try {
+      const configPath = new URL('./config.json', import.meta.url);
+      const content = readFileSync(configPath, 'utf-8');
+      return { ...defaults, ...JSON.parse(content) } as YouTubePluginConfig;
+    } catch {
+      console.log('[YouTube] Using default config');
+      return defaults;
+    }
   }
 
   canHandle(url: string): boolean {
@@ -249,23 +286,40 @@ export default class YouTubePlugin implements IPlatformPlugin {
       console.log('[YouTube] Navigating to list page...');
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(6000);
+      await page.waitForTimeout(this.config.pageLoadWaitMs);
 
-      // 检测登录状态
+      // 检测登录状态（含登录表单特征检测）
       const loginStatus = await page.evaluate(() => {
         const avatarBtn = document.querySelector('button#avatar-btn, yt-img-shadow#avatar-btn, img[alt="Avatar"]');
         const signInLink = document.querySelector('a[href="https://accounts.google.com/ServiceLogin"], a.yt-spec-button-shape-next--outline');
         const createBtn = document.querySelector('ytd-topbar-menu-button-renderer button, #create-icon');
+        // 登录表单特征：URL 跳转 / Google 邮箱输入框 / YouTube 登录组件
+        const isLoginPage =
+          window.location.href.includes('accounts.google.com') ||
+          !!document.querySelector('#identifierId') ||
+          !!document.querySelector('ytd-signin-renderer') ||
+          !!document.querySelector('yt-upsell-dialog-renderer');
         return {
           hasAvatar: !!avatarBtn,
           hasSignIn: !!signInLink,
           hasCreate: !!createBtn,
+          isLoginPage,
+          currentUrl: window.location.href,
           userName: document.querySelector('button#avatar-btn img')?.getAttribute('alt') || '',
         };
       });
-      console.log(`[YouTube] Login status: avatar=${loginStatus.hasAvatar}, signIn=${loginStatus.hasSignIn}, create=${loginStatus.hasCreate}`);
-      if (!loginStatus.hasAvatar && loginStatus.hasSignIn) {
-        console.warn('[YouTube] WARNING: Not logged in. Cookies may be expired or invalid. Try re-extracting cookies from browser.');
+      console.log(`[YouTube] Login status: avatar=${loginStatus.hasAvatar}, signIn=${loginStatus.hasSignIn}, loginPage=${loginStatus.isLoginPage}, url=${loginStatus.currentUrl}`);
+
+      // 若检测到未登录 / 出现登录表单，自动尝试刷新 cookies 并重试
+      if (loginStatus.isLoginPage || (!loginStatus.hasAvatar && loginStatus.hasSignIn)) {
+        console.warn('[YouTube] 检测到未登录状态（cookies 失效），正在尝试重新获取 cookies 并重试...');
+        const refreshed = await this.refreshCookiesAndReload(page, context, options.browser || 'chrome', url);
+        if (!refreshed) {
+          const alertMsg = '[YouTube] ALERT: Cookie 自动刷新失败，登录仍未成功。请检查浏览器是否已登录 YouTube，然后手动重启服务以重新提取 cookies。';
+          console.error(alertMsg);
+          throw new Error(alertMsg);
+        }
+        console.log('[YouTube] Cookie 刷新成功，继续抓取...');
       }
 
       // 判断页面类型：播放列表 / 频道主页 / Shorts
@@ -275,11 +329,12 @@ export default class YouTubePlugin implements IPlatformPlugin {
       console.log(`[YouTube] Page type: ${isPlaylist ? 'playlist' : isShorts ? 'shorts' : 'channel'}`);
 
       const videos: VideoItem[] = [];
-      let previousCount = 0;
+      let noNewContentStreak = 0;
+      const MAX_NO_NEW_STREAK = this.config.maxNoNewContentStreak;
       let scrollAttempts = 0;
-      const maxScrollAttempts = Math.ceil(maxItems / 20) + 3;
+      const maxScrollAttempts = Math.ceil(maxItems / 20) + 5;
 
-      while (videos.length < maxItems && scrollAttempts < maxScrollAttempts) {
+      while (videos.length < maxItems && scrollAttempts < maxScrollAttempts && noNewContentStreak < MAX_NO_NEW_STREAK) {
         // 提取页面视频数据 —— 零内部函数，彻底避免 esbuild __name 注入
         const newVideos = await page.evaluate((opts: {
           maxItems: number;
@@ -315,7 +370,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
             if (opts.isPlaylist) {
               const titleLink = item.querySelector('#video-title') as HTMLAnchorElement | null;
               title = titleLink?.getAttribute('title')?.trim() || titleLink?.textContent?.trim() || '';
-              href = titleLink?.getAttribute('href');
+              href = titleLink?.getAttribute('href') ?? null;
 
               const channelEl = item.querySelector('ytd-channel-name #text a, #channel-name a, .ytd-channel-name a');
               channel = channelEl?.textContent?.trim() || '';
@@ -388,7 +443,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
 
               const titleLink = media.querySelector('#video-title-link') as HTMLAnchorElement | null;
               title = titleLink?.getAttribute('title')?.trim() || titleLink?.textContent?.trim() || '';
-              href = titleLink?.getAttribute('href');
+              href = titleLink?.getAttribute('href') ?? null;
 
               const channelEl = media.querySelector('#channel-name #text, ytd-channel-name #text');
               channel = channelEl?.textContent?.trim() || '';
@@ -466,26 +521,57 @@ export default class YouTubePlugin implements IPlatformPlugin {
         }, { maxItems: maxItems - videos.length, isPlaylist, existingUrls: videos.map((v) => v.url) });
 
         // 合并新视频（去重）
+        const countBefore = videos.length;
         for (const v of newVideos) {
           if (!videos.find((existing) => existing.url === v.url)) {
             videos.push(v);
           }
         }
 
-        if (videos.length === previousCount) {
-          console.log('[YouTube] No more videos loaded');
+        const gained = videos.length - countBefore;
+        if (gained === 0) {
+          noNewContentStreak++;
+          console.log(`[YouTube] 本次滚动无新视频（连续 ${noNewContentStreak}/${this.config.maxNoNewContentStreak} 次无新内容）`);
+        } else {
+          noNewContentStreak = 0;
+          console.log(`[YouTube] 已加载 ${videos.length} 个视频（本次 +${gained}）...`);
+        }
+
+        if (noNewContentStreak >= MAX_NO_NEW_STREAK) {
+          console.log('[YouTube] 连续多次无新内容，已到达页面底部，停止滚动');
           break;
         }
 
-        previousCount = videos.length;
-        console.log(`[YouTube] Loaded ${videos.length} videos...`);
-
-        // 滚动加载更多
-        if (videos.length < maxItems) {
-          await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-          await page.waitForTimeout(3000);
-          scrollAttempts++;
+        if (videos.length >= maxItems) {
+          console.log(`[YouTube] 已达到目标数量 ${maxItems} 个，停止滚动`);
+          break;
         }
+
+        // 分段模拟鼠标滚轮滚动到底部，触发 YouTube 懒加载监听器
+        const prevHeight = await page.evaluate(() => document.body.scrollHeight);
+        const viewportHeight = page.viewportSize()?.height ?? 900;
+        const currentScrollY = await page.evaluate(() => window.scrollY);
+        const totalScroll = prevHeight - currentScrollY - viewportHeight;
+        const step = Math.max(viewportHeight, 500);
+        const steps = Math.max(1, Math.ceil(totalScroll / step));
+        for (let i = 0; i < steps; i++) {
+          await page.mouse.wheel(0, step);
+          await page.waitForTimeout(this.config.scrollStepIntervalMs);
+        }
+        // 等待页面高度增加（表示新内容已渲染）
+        await page.waitForFunction(
+          (h: number) => document.body.scrollHeight > h,
+          prevHeight,
+          { timeout: this.config.scrollHeightChangeTimeoutMs }
+        ).catch(() => {});
+        await page.waitForTimeout(this.config.scrollSettleWaitMs);
+        scrollAttempts++;
+      }
+
+      if (videos.length >= maxItems) {
+        console.log(`[YouTube] 已达到目标数量，共收集 ${videos.length} 个视频`);
+      } else {
+        console.log(`[YouTube] 已到达页面底部，共收集 ${videos.length} 个视频（目标: ${maxItems}）`);
       }
 
       await page.close();
@@ -502,6 +588,70 @@ export default class YouTubePlugin implements IPlatformPlugin {
       } else if (browser) {
         await browser.close().catch((err) => console.warn('[YouTube] Warning:', err));
       }
+    }
+  }
+
+  /**
+   * 清除旧 Cookie 缓存，从浏览器重新提取，注入到 context 后重新加载页面。
+   * 返回 true 表示刷新后登录成功，false 表示仍未登录（需发出告警）。
+   */
+  private async refreshCookiesAndReload(
+    page: import('playwright').Page,
+    context: import('playwright').BrowserContext,
+    browserName: string,
+    url: string,
+  ): Promise<boolean> {
+    try {
+      const fs = await import('fs/promises');
+      const cookiePath = join('./cache/cookies', `youtube_${browserName}.txt`);
+
+      // 删除过期的 cookie 缓存
+      await fs.unlink(cookiePath).catch(() => {});
+      console.log('[YouTube] 已清除旧 cookies 缓存，正在从浏览器重新提取...');
+
+      // 重新从浏览器提取
+      const newContent = await this.extractCookiesFromBrowser(browserName);
+      if (!newContent) {
+        console.error('[YouTube] 无法从浏览器重新提取 cookies（yt-dlp 失败）');
+        return false;
+      }
+
+      // 写入新缓存
+      await fs.writeFile(cookiePath, newContent, 'utf-8');
+      console.log('[YouTube] 新 cookies 已写入缓存');
+
+      // 清除 context 中的旧 cookies，重新注入
+      await context.clearCookies();
+      await this.injectCookies(context, browserName);
+
+      // 重新加载目标页面
+      console.log('[YouTube] 重新加载页面以验证登录状态...');
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(this.config.loginCheckRetryWaitMs);
+
+      // 再次检测登录状态
+      const retryStatus = await page.evaluate(() => {
+        const avatarBtn = document.querySelector('button#avatar-btn, yt-img-shadow#avatar-btn, img[alt="Avatar"]');
+        const signInLink = document.querySelector('a[href="https://accounts.google.com/ServiceLogin"], a.yt-spec-button-shape-next--outline');
+        const isLoginPage =
+          window.location.href.includes('accounts.google.com') ||
+          !!document.querySelector('#identifierId') ||
+          !!document.querySelector('ytd-signin-renderer') ||
+          !!document.querySelector('yt-upsell-dialog-renderer');
+        return { hasAvatar: !!avatarBtn, hasSignIn: !!signInLink, isLoginPage };
+      });
+
+      if (retryStatus.isLoginPage || (!retryStatus.hasAvatar && retryStatus.hasSignIn)) {
+        console.error('[YouTube] Cookie 刷新后仍处于未登录状态');
+        return false;
+      }
+
+      console.log('[YouTube] Cookie 刷新成功，已恢复登录');
+      return true;
+    } catch (err) {
+      console.error('[YouTube] refreshCookiesAndReload 出错:', err);
+      return false;
     }
   }
 
