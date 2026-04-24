@@ -51,6 +51,46 @@ export class JobManager {
   }
 
   /**
+   * 列出所有任务（可选按状态过滤）
+   */
+  listJobs(filter?: { status?: ScrapeJob['status'] }): ScrapeJob[] {
+    const jobs = Array.from(this.jobs.values());
+    if (filter?.status) {
+      return jobs.filter((j) => j.status === filter.status);
+    }
+    return jobs;
+  }
+
+  /**
+   * 重试任务：复制失败任务的参数创建新任务并启动
+   */
+  retryJob(id: string): ScrapeJob | null {
+    const job = this.jobs.get(id);
+    if (!job) return null;
+    const newJob = this.createJob(job.urls, job.options);
+    this.startJob(newJob.id);
+    return newJob;
+  }
+
+  /**
+   * 取消任务
+   */
+  cancelJob(id: string): { success: boolean; message: string } {
+    const job = this.jobs.get(id);
+    if (!job) {
+      return { success: false, message: 'Job not found' };
+    }
+    if (job.status === 'completed' || job.status === 'failed') {
+      return { success: false, message: `Job already ${job.status}` };
+    }
+    job.status = 'failed';
+    job.errors.push({ url: '', error: 'Job cancelled by user' });
+    job.updatedAt = new Date().toISOString();
+    this.activeCount = Math.max(0, this.activeCount - 1);
+    return { success: true, message: 'Job cancelled' };
+  }
+
+  /**
    * 启动任务（异步执行）
    */
   startJob(jobId: string): void {
@@ -105,25 +145,31 @@ export class JobManager {
 
   /**
    * 并行处理（list 模式）
+   * 使用局部变量收集结果，避免并发 push 导致竞态条件
    */
   private async runParallel(job: ScrapeJob): Promise<void> {
     const { urls, options } = job;
 
-    const promises = urls.map(async (url) => {
-      try {
+    const settled = await Promise.allSettled(
+      urls.map(async (url) => {
         const result = await this.scrapeUrl(url, options);
-        job.results.push(result);
-      } catch (err) {
+        return { type: 'result' as const, url, result };
+      })
+    );
+
+    for (const item of settled) {
+      if (item.status === 'fulfilled') {
+        job.results.push(item.value.result);
+      } else {
         job.errors.push({
-          url,
-          error: err instanceof Error ? err.message : 'Unknown error',
+          url: '',
+          error: item.reason instanceof Error ? item.reason.message : String(item.reason),
         });
       }
       job.progress.done++;
-      job.updatedAt = new Date().toISOString();
-    });
+    }
 
-    await Promise.all(promises);
+    job.updatedAt = new Date().toISOString();
   }
 
   /**
@@ -171,8 +217,11 @@ export class JobManager {
     let count = 0;
 
     for (const [id, job] of this.jobs) {
-      const updated = new Date(job.updatedAt).getTime();
-      if (now - updated > maxAgeMs) {
+      // 优先使用 completedAt，避免运行中的任务因长时间未更新 updatedAt 而被误清理
+      const time = job.completedAt
+        ? new Date(job.completedAt).getTime()
+        : new Date(job.updatedAt).getTime();
+      if (now - time > maxAgeMs) {
         this.jobs.delete(id);
         count++;
       }

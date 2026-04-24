@@ -37,16 +37,16 @@ export function createAuthMiddleware(
 
     if (!token) {
       reply.code(401).send({
-        error: 'Unauthorized',
-        message: `Missing ${headerName} header`
+        success: false,
+        error: `Missing ${headerName} header`
       });
       return;
     }
 
     if (token !== expectedToken) {
       reply.code(401).send({
-        error: 'Unauthorized',
-        message: 'Invalid token'
+        success: false,
+        error: 'Invalid token'
       });
       return;
     }

@@ -69,7 +69,7 @@ export class CookieManager implements ICookieManager {
     const files = await this.listCacheFiles();
     for (const file of files) {
       if (file.startsWith(platform + '_')) {
-        await unlink(join(this.cacheDir, file)).catch(() => {});
+        await unlink(join(this.cacheDir, file)).catch((err) => console.warn('[CookieManager] Warning:', err));
       }
     }
   }
@@ -117,7 +117,7 @@ export class CookieManager implements ICookieManager {
         try {
           // 读取临时文件中的 cookies
           const cookies = await readFile(tempFile, 'utf-8');
-          await unlink(tempFile).catch(() => {});
+          await unlink(tempFile).catch((err) => console.warn('[CookieManager] Warning:', err));
 
           if (cookies && cookies.length > 0) {
             resolve(cookies);
@@ -125,13 +125,13 @@ export class CookieManager implements ICookieManager {
             reject(new Error(`Failed to extract cookies: ${stderr}`));
           }
         } catch (err) {
-          await unlink(tempFile).catch(() => {});
+          await unlink(tempFile).catch((e) => console.warn('[CookieManager] Warning:', e));
           reject(new Error(`Failed to extract cookies: ${err}`));
         }
       });
 
       proc.on('error', (err) => {
-        unlink(tempFile).catch(() => {});
+        unlink(tempFile).catch((e) => console.warn('[CookieManager] Warning:', e));
         reject(new Error(`Failed to spawn yt-dlp: ${err.message}`));
       });
     });
@@ -153,7 +153,7 @@ export class CookieManager implements ICookieManager {
     const files = await this.listCacheFiles();
     for (const file of files) {
       if (file.endsWith('.txt')) {
-        await unlink(join(this.cacheDir, file)).catch(() => {});
+        await unlink(join(this.cacheDir, file)).catch((err) => console.warn('[CookieManager] Warning:', err));
       }
     }
     console.log('[CookieManager] All cookies cleared');

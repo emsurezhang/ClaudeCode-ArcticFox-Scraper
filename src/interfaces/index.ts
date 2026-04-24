@@ -40,6 +40,10 @@ export interface ScrapeOptions {
   scrollStrategy?: 'min' | 'max' | 'all';
   /** 最大收集数量 (list 模式) */
   maxItems?: number;
+  /** Playwright 浏览器池（由服务器注入） */
+  browserPool?: IBrowserPool;
+  /** 音频文件输出目录（默认: 项目上一级目录的 data/YYYY-MM-DD/） */
+  audioOutputDir?: string;
 }
 
 /** 刮削结果 */
@@ -67,7 +71,7 @@ export interface ScrapeResult {
   /** 字幕语言 */
   transcriptLanguage?: string;
   /** 原始元数据 */
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   /** 刮削时间戳 */
   scrapedAt: string;
 }
@@ -207,6 +211,52 @@ export interface PluginsResponse {
   }[];
 }
 
+/** Feed 订阅条目 */
+export interface FeedEntry {
+  /** 订阅 URL */
+  url: string;
+  /** 平台名称 */
+  platform: string;
+  /** 添加时间 */
+  addedAt: string;
+  /** 上次检查时间 */
+  lastCheckedAt?: string;
+  /** 已知内容 ID 列表（以内容 URL 作为唯一标识） */
+  knownIds: string[];
+}
+
+/** Feed 检查单项结果 */
+export interface FeedCheckItem {
+  /** 内容 URL */
+  url: string;
+  /** 标题 */
+  title?: string;
+  /** 作者 */
+  author?: string;
+  /** 发布时间 */
+  publishedAt?: string;
+  /** 音频文件路径（如果已下载） */
+  audioPath?: string;
+  /** 字幕/转录文本 */
+  transcript?: string;
+}
+
+/** Feed 检查结果 */
+export interface FeedCheckResult {
+  /** 订阅 URL */
+  url: string;
+  /** 平台名称 */
+  platform: string;
+  /** 新内容数量 */
+  newCount: number;
+  /** 新内容列表 */
+  newItems: FeedCheckItem[];
+  /** 抓取错误 */
+  errors?: { url: string; error: string }[];
+  /** 检查时间 */
+  checkedAt: string;
+}
+
 /** 异步刮削任务 */
 export interface ScrapeJob {
   id: string;
@@ -266,11 +316,20 @@ export interface ServerConfig {
     /** 重试次数，默认 3 */
     retryCount?: number;
   };
+  /** CORS 配置 */
+  corsOrigin?: boolean | string;
   /** 平台特定配置 */
   platforms?: Record<string, {
     cookiesFromBrowser?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   }>;
+}
+
+/** 浏览器池接口 */
+export interface IBrowserPool {
+  acquire(platform: string, browserName: string): Promise<import('playwright').BrowserContext>;
+  release(platform: string, browserName: string, context: import('playwright').BrowserContext): Promise<void>;
+  destroy(): Promise<void>;
 }
 
 /** 插件 package.json 中的 plugin 字段 */

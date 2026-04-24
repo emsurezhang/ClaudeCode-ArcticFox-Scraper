@@ -3,7 +3,7 @@
  *
  * 模式支持:
  * - detail: 获取单个视频详情
- * - list: 获取频道视频列表
+ * - list: 获取频道/播放列表视频列表 (Playwright DOM 提取)
  *
  * 字幕提取流程:
  * 1. 下载音频 (yt-dlp)
@@ -12,8 +12,8 @@
  */
 
 import { spawn } from 'child_process';
-import { mkdir, unlink } from 'fs/promises';
-import { join } from 'path';
+import { mkdir, unlink, rename } from 'fs/promises';
+import { join, resolve, basename } from 'path';
 import type {
   IPlatformPlugin,
   ScrapeResult,
@@ -26,6 +26,40 @@ interface YouTubeScrapeOptions extends ScrapeOptions {
   maxItems?: number;
   /** Whisper 模型名称: tiny, base, small, medium, large */
   whisperModel?: string;
+}
+
+interface VideoItem {
+  title: string;
+  url: string;
+  channel?: string;
+  duration?: number;
+  viewCount?: number;
+  publishedAt?: string;
+  thumbnail?: string;
+}
+
+interface VideoMetadata {
+  title: string;
+  author: string;
+  description: string;
+  publishedAt?: string;
+  duration?: number;
+  viewCount?: number;
+  likeCount?: number;
+  thumbnail?: string;
+}
+
+const BROWSER_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+/** 动态导入 Playwright */
+let playwright: typeof import('playwright') | null = null;
+
+async function getPlaywright(): Promise<typeof import('playwright')> {
+  if (!playwright) {
+    playwright = await import('playwright');
+  }
+  return playwright;
 }
 
 export default class YouTubePlugin implements IPlatformPlugin {
@@ -41,8 +75,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
   private tempDir = './cache/temp';
 
   constructor() {
-    // 确保临时目录存在
-    mkdir(this.tempDir, { recursive: true }).catch(() => {});
+    mkdir(this.tempDir, { recursive: true }).catch((err) => console.warn('[YouTube] Warning:', err));
   }
 
   canHandle(url: string): boolean {
@@ -72,7 +105,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
     const maxItems = options.maxItems || 50;
     console.log(`[YouTube] List mode: collecting up to ${maxItems} videos`);
 
-    const videos = await this.getPlaylistVideos(url, maxItems);
+    const videos = await this.getPlaylistVideos(url, maxItems, options);
 
     if (videos.length === 0) {
       return {
@@ -101,6 +134,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
           duration: v.duration,
           viewCount: v.viewCount,
           publishedAt: v.publishedAt,
+          thumbnail: v.thumbnail,
         })),
       },
       scrapedAt: new Date().toISOString(),
@@ -144,10 +178,18 @@ export default class YouTubePlugin implements IPlatformPlugin {
       }
     }
 
-    // 如果不需要保留音频文件，清理临时文件
+    // 处理音频文件保存或清理
     const shouldKeepAudio = options.downloadAudio;
-    if (!shouldKeepAudio && audioPath) {
-      await unlink(audioPath).catch(() => {});
+    let finalAudioPath = audioPath;
+    if (shouldKeepAudio && audioPath) {
+      const dateDir = options.audioOutputDir || join(resolve('..'), 'data', new Date().toISOString().slice(0, 10));
+      await mkdir(dateDir, { recursive: true });
+      const destPath = join(dateDir, basename(audioPath));
+      await rename(audioPath, destPath);
+      console.log(`[YouTube] Audio saved to: ${destPath}`);
+      finalAudioPath = destPath;
+    } else if (!shouldKeepAudio && audioPath) {
+      await unlink(audioPath).catch((err) => console.warn('[YouTube] Warning:', err));
       console.log(`[YouTube] Cleaned up temp audio: ${audioPath}`);
     }
 
@@ -160,7 +202,7 @@ export default class YouTubePlugin implements IPlatformPlugin {
       publishedAt: metadata.publishedAt,
       transcript,
       transcriptLanguage,
-      audioPath: shouldKeepAudio ? audioPath : undefined,
+      audioPath: finalAudioPath,
       metadata: {
         mode: 'detail',
         duration: metadata.duration,
@@ -173,88 +215,519 @@ export default class YouTubePlugin implements IPlatformPlugin {
   }
 
   /**
-   * 获取播放列表/频道视频列表
+   * 获取播放列表/频道视频列表（Playwright DOM 提取，无 yt-dlp）
    */
-  private async getPlaylistVideos(url: string, maxItems: number): Promise<any[]> {
-    return new Promise((resolve, reject) => {
-      const args = [
-        '--dump-json',
-        '--playlist-end', maxItems.toString(),
-        '--cookies-from-browser', 'chrome',
-        '--extractor-args', 'youtube:skip=hls,dash', // 跳过下载以提高速度
-        url,
-      ];
+  private async getPlaylistVideos(
+    url: string,
+    maxItems: number,
+    options: ScrapeOptions
+  ): Promise<VideoItem[]> {
+    const pw = await getPlaywright();
+    let browser: import('playwright').Browser | null = null;
+    let context: import('playwright').BrowserContext | undefined;
+    let page: import('playwright').Page | undefined;
+    const usePool = !options.debug && options.browserPool;
 
-      console.log(`[YouTube] Running: yt-dlp ${args.join(' ')}`);
+    try {
+      if (usePool) {
+        context = await options.browserPool!.acquire(this.name, options.browser || 'chrome');
+      } else {
+        browser = await pw.chromium.launch({
+          headless: !options.debug,
+          args: ['--disable-blink-features=AutomationControlled'],
+        });
+        context = await browser.newContext({
+          viewport: { width: 1366, height: 900 },
+          userAgent: BROWSER_UA,
+        });
+      }
 
-      const proc = spawn('yt-dlp', args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 120000,
+      // 注入 cookies
+      await this.injectCookies(context, options.browser || 'chrome');
+
+      page = await context.newPage();
+      console.log('[YouTube] Navigating to list page...');
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(6000);
+
+      // 检测登录状态
+      const loginStatus = await page.evaluate(() => {
+        const avatarBtn = document.querySelector('button#avatar-btn, yt-img-shadow#avatar-btn, img[alt="Avatar"]');
+        const signInLink = document.querySelector('a[href="https://accounts.google.com/ServiceLogin"], a.yt-spec-button-shape-next--outline');
+        const createBtn = document.querySelector('ytd-topbar-menu-button-renderer button, #create-icon');
+        return {
+          hasAvatar: !!avatarBtn,
+          hasSignIn: !!signInLink,
+          hasCreate: !!createBtn,
+          userName: document.querySelector('button#avatar-btn img')?.getAttribute('alt') || '',
+        };
       });
+      console.log(`[YouTube] Login status: avatar=${loginStatus.hasAvatar}, signIn=${loginStatus.hasSignIn}, create=${loginStatus.hasCreate}`);
+      if (!loginStatus.hasAvatar && loginStatus.hasSignIn) {
+        console.warn('[YouTube] WARNING: Not logged in. Cookies may be expired or invalid. Try re-extracting cookies from browser.');
+      }
 
-      let output = '';
-      let stderr = '';
+      // 判断页面类型：播放列表 / 频道主页 / Shorts
+      const isPlaylist = url.includes('/playlist?list=');
+      const isShorts = url.includes('/shorts') || url.includes('@') && url.includes('/shorts');
 
-      proc.stdout.on('data', (data) => {
-        output += data.toString();
-      });
+      console.log(`[YouTube] Page type: ${isPlaylist ? 'playlist' : isShorts ? 'shorts' : 'channel'}`);
 
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-        // 输出进度信息
-        const line = data.toString().trim();
-        if (line.includes('Downloading') || line.includes('Extracting')) {
-          console.log(`[YouTube] ${line}`);
-        }
-      });
+      const videos: VideoItem[] = [];
+      let previousCount = 0;
+      let scrollAttempts = 0;
+      const maxScrollAttempts = Math.ceil(maxItems / 20) + 3;
 
-      proc.on('close', (code) => {
-        if (code === 0 || code === 101) { // 101 = partial download (playlist not fully downloaded)
-          try {
-            // 解析多行 JSON 输出
-            const videos: any[] = [];
-            const lines = output.trim().split('\n').filter(line => line.trim());
+      while (videos.length < maxItems && scrollAttempts < maxScrollAttempts) {
+        // 提取页面视频数据 —— 零内部函数，彻底避免 esbuild __name 注入
+        const newVideos = await page.evaluate((opts: {
+          maxItems: number;
+          isPlaylist: boolean;
+          existingUrls: string[];
+        }) => {
+          const result: Array<{
+            title: string;
+            url: string;
+            channel?: string;
+            duration?: number;
+            viewCount?: number;
+            publishedAt?: string;
+            thumbnail?: string;
+          }> = [];
+          const existing = new Set(opts.existingUrls);
 
-            for (const line of lines) {
-              try {
-                const data = JSON.parse(line);
-                videos.push({
-                  title: data.title,
-                  url: data.webpage_url || `https://youtube.com/watch?v=${data.id}`,
-                  channel: data.channel || data.uploader,
-                  duration: data.duration,
-                  viewCount: data.view_count,
-                  publishedAt: data.upload_date ?
-                    `${data.upload_date.slice(0, 4)}-${data.upload_date.slice(4, 6)}-${data.upload_date.slice(6, 8)}` :
-                    undefined,
-                });
-              } catch {
-                // 忽略解析失败的行
+          const items = opts.isPlaylist
+            ? document.querySelectorAll('ytd-playlist-video-renderer')
+            : document.querySelectorAll('ytd-rich-item-renderer');
+
+          for (const item of items) {
+            if (result.length >= opts.maxItems) break;
+
+            let title = '';
+            let href: string | null = null;
+            let channel = '';
+            let thumbnail = '';
+            let duration: number | undefined;
+            let viewCount: number | undefined;
+            let publishedAt: string | undefined;
+
+            if (opts.isPlaylist) {
+              const titleLink = item.querySelector('#video-title') as HTMLAnchorElement | null;
+              title = titleLink?.getAttribute('title')?.trim() || titleLink?.textContent?.trim() || '';
+              href = titleLink?.getAttribute('href');
+
+              const channelEl = item.querySelector('ytd-channel-name #text a, #channel-name a, .ytd-channel-name a');
+              channel = channelEl?.textContent?.trim() || '';
+
+              const thumbEl = item.querySelector('yt-img-shadow img, ytd-thumbnail img');
+              thumbnail = thumbEl?.getAttribute('src') || '';
+
+              const durEl = item.querySelector('ytd-thumbnail-overlay-time-status-renderer #text, #time-status #text, span.ytd-thumbnail-overlay-time-status-renderer');
+              if (durEl) {
+                const durText = durEl.textContent?.trim() || '';
+                const parts = durText.split(':').map((x) => parseInt(x, 10));
+                if (!parts.some(isNaN)) {
+                  if (parts.length === 2) duration = parts[0] * 60 + parts[1];
+                  if (parts.length === 3) duration = parts[0] * 3600 + parts[1] * 60 + parts[2];
+                }
+              }
+
+              const metaItems = item.querySelectorAll('#video-info span, #byline-container span, .inline-metadata-item, ytd-video-meta-block span');
+              for (const el of metaItems) {
+                const txt = el.textContent?.trim() || '';
+                if (!viewCount && (txt.includes('view') || txt.includes('观看') || txt.includes('次') || /\d+/.test(txt))) {
+                  const clean = txt.replace(/,/g, '').trim();
+                  const m = clean.match(/([\d.]+)\s*万/);
+                  if (m) { viewCount = Math.round(parseFloat(m[1]) * 10000); }
+                  else {
+                    const m2 = clean.match(/([\d.]+)\s*[Kk]/);
+                    if (m2) { viewCount = Math.round(parseFloat(m2[1]) * 1000); }
+                    else {
+                      const m3 = clean.match(/(\d+)/);
+                      if (m3) { viewCount = parseInt(m3[1], 10); }
+                    }
+                  }
+                }
+                if (!publishedAt) {
+                  const now = new Date();
+                  let match: RegExpMatchArray | null;
+                  if ((match = txt.match(/(\d+)\s*(分钟|分鐘|minute|min)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 60 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(小时|小時|hour|hr)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(天|day)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 24 * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(周|星期|week|wk)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 7 * 24 * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(月|month|mo)s?\s*前|ago/i))) {
+                    const d = new Date(now); d.setMonth(d.getMonth() - parseInt(match[1], 10));
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(年|year|yr)s?\s*前|ago/i))) {
+                    const d = new Date(now); d.setFullYear(d.getFullYear() - parseInt(match[1], 10));
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if (txt.match(/昨天|yesterday/i)) {
+                    const d = new Date(now.getTime() - 24 * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else {
+                    const absMatch = txt.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+                    if (absMatch) {
+                      const d = new Date(absMatch[1] + '-' + absMatch[2] + '-' + absMatch[3]);
+                      publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                    }
+                  }
+                }
+              }
+            } else {
+              const media = item.querySelector('ytd-rich-grid-media');
+              if (!media) continue;
+
+              const titleLink = media.querySelector('#video-title-link') as HTMLAnchorElement | null;
+              title = titleLink?.getAttribute('title')?.trim() || titleLink?.textContent?.trim() || '';
+              href = titleLink?.getAttribute('href');
+
+              const channelEl = media.querySelector('#channel-name #text, ytd-channel-name #text');
+              channel = channelEl?.textContent?.trim() || '';
+
+              const thumbEl = media.querySelector('ytd-thumbnail img, yt-image img');
+              thumbnail = thumbEl?.getAttribute('src') || '';
+
+              const durEl = media.querySelector('ytd-thumbnail-overlay-time-status-renderer #text, badge-shape .ytBadgeShapeText');
+              if (durEl) {
+                const durText = durEl.textContent?.trim() || '';
+                const parts = durText.split(':').map((x) => parseInt(x, 10));
+                if (!parts.some(isNaN)) {
+                  if (parts.length === 2) duration = parts[0] * 60 + parts[1];
+                  if (parts.length === 3) duration = parts[0] * 3600 + parts[1] * 60 + parts[2];
+                }
+              }
+
+              const metaItems = media.querySelectorAll('.inline-metadata-item, ytd-video-meta-block span, #metadata-line span');
+              for (const el of metaItems) {
+                const txt = el.textContent?.trim() || '';
+                if (!viewCount && (txt.includes('view') || txt.includes('观看') || txt.includes('次') || /\d+/.test(txt))) {
+                  const clean = txt.replace(/,/g, '').trim();
+                  const m = clean.match(/([\d.]+)\s*万/);
+                  if (m) { viewCount = Math.round(parseFloat(m[1]) * 10000); }
+                  else {
+                    const m2 = clean.match(/([\d.]+)\s*[Kk]/);
+                    if (m2) { viewCount = Math.round(parseFloat(m2[1]) * 1000); }
+                    else {
+                      const m3 = clean.match(/(\d+)/);
+                      if (m3) { viewCount = parseInt(m3[1], 10); }
+                    }
+                  }
+                }
+                if (!publishedAt) {
+                  const now = new Date();
+                  let match: RegExpMatchArray | null;
+                  if ((match = txt.match(/(\d+)\s*(分钟|分鐘|minute|min)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 60 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(小时|小時|hour|hr)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(天|day)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 24 * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(周|星期|week|wk)s?\s*前|ago/i))) {
+                    const d = new Date(now.getTime() - parseInt(match[1], 10) * 7 * 24 * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(月|month|mo)s?\s*前|ago/i))) {
+                    const d = new Date(now); d.setMonth(d.getMonth() - parseInt(match[1], 10));
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if ((match = txt.match(/(\d+)\s*(年|year|yr)s?\s*前|ago/i))) {
+                    const d = new Date(now); d.setFullYear(d.getFullYear() - parseInt(match[1], 10));
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else if (txt.match(/昨天|yesterday/i)) {
+                    const d = new Date(now.getTime() - 24 * 3600 * 1000);
+                    publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                  } else {
+                    const absMatch = txt.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+                    if (absMatch) {
+                      const d = new Date(absMatch[1] + '-' + absMatch[2] + '-' + absMatch[3]);
+                      publishedAt = d.getFullYear() + '-' + ((d.getMonth() + 1) < 10 ? '0' + (d.getMonth() + 1) : (d.getMonth() + 1)) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate()) + ' ' + (d.getHours() < 10 ? '0' + d.getHours() : d.getHours()) + ':' + (d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes()) + ':' + (d.getSeconds() < 10 ? '0' + d.getSeconds() : d.getSeconds());
+                    }
+                  }
+                }
               }
             }
 
-            console.log(`[YouTube] Found ${videos.length} videos`);
-            resolve(videos);
-          } catch (err) {
-            reject(new Error('Failed to parse playlist data'));
+            const videoUrl = href ? (href.startsWith('http') ? href : 'https://www.youtube.com' + href) : '';
+            if (!videoUrl || existing.has(videoUrl)) continue;
+            result.push({ title, url: videoUrl, channel, duration, viewCount, publishedAt, thumbnail });
           }
-        } else {
-          reject(new Error(`yt-dlp failed: ${stderr || `exit code ${code}`}`));
+
+          return result;
+        }, { maxItems: maxItems - videos.length, isPlaylist, existingUrls: videos.map((v) => v.url) });
+
+        // 合并新视频（去重）
+        for (const v of newVideos) {
+          if (!videos.find((existing) => existing.url === v.url)) {
+            videos.push(v);
+          }
+        }
+
+        if (videos.length === previousCount) {
+          console.log('[YouTube] No more videos loaded');
+          break;
+        }
+
+        previousCount = videos.length;
+        console.log(`[YouTube] Loaded ${videos.length} videos...`);
+
+        // 滚动加载更多
+        if (videos.length < maxItems) {
+          await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+          await page.waitForTimeout(3000);
+          scrollAttempts++;
+        }
+      }
+
+      await page.close();
+      return videos.slice(0, maxItems);
+    } catch (err) {
+      console.error('[YouTube] List scraping error:', err);
+      return [];
+    } finally {
+      if (page) {
+        await page.close().catch((err) => console.warn('[YouTube] Warning:', err));
+      }
+      if (usePool && options.browserPool && context) {
+        await options.browserPool.release(this.name, options.browser || 'chrome', context);
+      } else if (browser) {
+        await browser.close().catch((err) => console.warn('[YouTube] Warning:', err));
+      }
+    }
+  }
+
+  /**
+   * 注入 YouTube cookies，注入后验证登录状态
+   */
+  private async injectCookies(
+    context: import('playwright').BrowserContext,
+    browserName: string
+  ): Promise<void> {
+    try {
+      const cookiePath = join('./cache/cookies', `youtube_${browserName}.txt`);
+      const fs = await import('fs/promises');
+      let content = await fs.readFile(cookiePath, 'utf-8').catch(() => null);
+
+      // 如果没有缓存或文件为空，尝试从浏览器重新提取
+      if (!content || content.trim().length === 0) {
+        console.log('[YouTube] No cached cookies found, attempting to extract from browser...');
+        content = await this.extractCookiesFromBrowser(browserName);
+        if (content) {
+          await fs.writeFile(cookiePath, content, 'utf-8');
+        }
+      }
+
+      if (!content) {
+        console.log('[YouTube] No cookies available');
+        return;
+      }
+
+      const cookies = this.parseNetscapeCookies(content);
+      if (cookies.length === 0) {
+        console.log('[YouTube] No valid cookies after parsing');
+        return;
+      }
+
+      // 批量注入，比逐条注入更高效
+      let injected = 0;
+      const failed: string[] = [];
+      for (const cookie of cookies) {
+        try {
+          await context.addCookies([cookie]);
+          injected++;
+        } catch (e: any) {
+          failed.push(`${cookie.name}(${cookie.domain}): ${e.message || 'unknown'}`);
+        }
+      }
+
+      console.log(`[YouTube] Injected ${injected}/${cookies.length} cookies`);
+      if (failed.length > 0) {
+        console.log(`[YouTube] ${failed.length} cookies failed (first 3): ${failed.slice(0, 3).join('; ')}`);
+      }
+
+      // 验证关键 cookie 是否已注入
+      const ctxCookies = await context.cookies('https://www.youtube.com');
+      const hasLoginInfo = ctxCookies.some((c) => c.name === 'LOGIN_INFO');
+      const hasSid = ctxCookies.some((c) => c.name === 'SID');
+      console.log(`[YouTube] Context cookies: ${ctxCookies.length} total, LOGIN_INFO=${hasLoginInfo}, SID=${hasSid}`);
+    } catch (err) {
+      console.error('[YouTube] Failed to inject cookies:', err);
+    }
+  }
+
+  /**
+   * 使用 yt-dlp 从浏览器提取 cookies 到 Netscape 格式文件
+   */
+  private async extractCookiesFromBrowser(browserName: string): Promise<string | null> {
+    const fs = await import('fs/promises');
+    const tempFile = join(this.tempDir, `_yt_cookies_${Date.now()}.txt`);
+
+    return new Promise((resolve) => {
+      // yt-dlp --cookies-from-browser 会将提取的 cookies 写入 --cookies 指定的文件
+      const args = [
+        '--cookies-from-browser', browserName,
+        '--cookies', tempFile,
+        '--no-download',
+        '-o', '/dev/null',
+        'https://www.youtube.com/robots.txt',
+      ];
+      const proc = spawn('yt-dlp', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      });
+
+      let stderr = '';
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', async (code) => {
+        try {
+          const cookies = await fs.readFile(tempFile, 'utf-8');
+          await fs.unlink(tempFile).catch(() => {});
+          if (cookies && cookies.includes('Netscape HTTP Cookie File')) {
+            resolve(cookies);
+          } else {
+            console.warn(`[YouTube] Cookie extraction produced invalid output (code=${code}): ${stderr}`);
+            resolve(null);
+          }
+        } catch {
+          await fs.unlink(tempFile).catch(() => {});
+          console.warn(`[YouTube] Cookie extraction failed: ${stderr || `exit code ${code}`}`);
+          resolve(null);
         }
       });
 
-      proc.on('error', reject);
+      proc.on('error', (err) => {
+        fs.unlink(tempFile).catch(() => {});
+        console.warn('[YouTube] Cookie extraction error:', err);
+        resolve(null);
+      });
     });
   }
 
-  private async getMetadata(url: string): Promise<any> {
+  /**
+   * 解析 Netscape cookies 格式
+   *
+   * Netscape 格式每行 7 列（tab 分隔）:
+   *   domain | includeSubdomains(flag) | path | secure | expires(秒) | name | value
+   *
+   * Playwright 的 addCookies 要求:
+   * - __Host- cookies 必须是 host-only（domain 不带点前缀）、Secure、Path=/
+   * - __Secure- cookies 必须有 Secure
+   */
+  private parseNetscapeCookies(content: string): Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: 'Strict' | 'Lax' | 'None';
+  }> {
+    const MAX_EXPIRES_SEC = 32503680000;
+    const WINDOWS_EPOCH_OFFSET_SEC = 11644473600;
+
+    const cookies: Array<{
+      name: string;
+      value: string;
+      domain: string;
+      path: string;
+      expires?: number;
+      httpOnly?: boolean;
+      secure?: boolean;
+      sameSite?: 'Strict' | 'Lax' | 'None';
+    }> = [];
+
+    const lines = content.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const parts = trimmed.split('\t');
+      if (parts.length < 7) continue;
+
+      const [rawDomain, flag, path, secure, rawExpires, name, ...valueParts] = parts;
+      const value = valueParts.join('\t');
+
+      if (!name || !name.trim()) continue;
+
+      // 只保留 youtube.com / google.com / accounts.google.com 相关的 cookies
+      const isRelevant =
+        rawDomain.includes('youtube.com') ||
+        rawDomain === 'google.com' ||
+        rawDomain === '.google.com' ||
+        rawDomain.includes('accounts.google.com');
+      if (!isRelevant) continue;
+
+      const isHostPrefixed = name.startsWith('__Host-');
+      const isSecurePrefixed = name.startsWith('__Secure-');
+
+      // __Host- cookies 必须是 host-only：domain 不带点前缀，且必须 Secure + Path=/
+      let domain: string;
+      if (isHostPrefixed) {
+        // Playwright 接受不带点的 domain 表示 host-only
+        domain = rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
+      } else {
+        domain = rawDomain.startsWith('.') ? rawDomain : `.${rawDomain}`;
+      }
+
+      const cookiePath = path && path.startsWith('/') ? path : '/';
+
+      // 解析 expires
+      let expiresValue: number | undefined;
+      const rawNum = parseFloat(rawExpires);
+      if (!isNaN(rawNum) && rawNum > 0) {
+        let sec = rawNum;
+        if (sec > 1e14) {
+          sec = Math.floor(sec / 1e6) - WINDOWS_EPOCH_OFFSET_SEC;
+        } else if (sec > 1e12) {
+          sec = Math.floor(sec / 1e3);
+        }
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (sec > nowSec && sec <= MAX_EXPIRES_SEC) {
+          expiresValue = Math.floor(sec);
+        }
+      }
+
+      // __Host- 和 __Secure- 前缀的 cookies 必须有 Secure
+      const isSecure = secure === 'TRUE' || isHostPrefixed || isSecurePrefixed;
+
+      cookies.push({
+        name: name.trim(),
+        value,
+        domain,
+        path: cookiePath,
+        ...(expiresValue !== undefined ? { expires: expiresValue } : {}),
+        secure: isSecure,
+        sameSite: 'Lax',
+      });
+    }
+
+    return cookies;
+  }
+
+  private async getMetadata(url: string): Promise<VideoMetadata> {
     return new Promise((resolve, reject) => {
-      const proc = spawn('yt-dlp', [
+      const args = [
         '--dump-json',
         '--no-download',
         '--cookies-from-browser', 'chrome',
+        '--proxy', 'http://127.0.0.1:7897',
         url,
-      ], {
+      ];
+      const proc = spawn('yt-dlp', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 60000,
       });
@@ -303,14 +776,16 @@ export default class YouTubePlugin implements IPlatformPlugin {
     const outputPath = join(this.tempDir, `${videoId}.mp3`);
 
     return new Promise((resolve, reject) => {
-      const proc = spawn('yt-dlp', [
+      const args = [
         '-x',
         '--audio-format', 'mp3',
         '--audio-quality', '0',
         '--cookies-from-browser', 'chrome',
+        '--proxy', 'http://127.0.0.1:7897',
         '-o', outputPath,
         url,
-      ], {
+      ];
+      const proc = spawn('yt-dlp', args, {
         stdio: 'ignore',
         timeout: 300000,
       });
@@ -341,5 +816,4 @@ export default class YouTubePlugin implements IPlatformPlugin {
 
     return 'unknown';
   }
-
 }

@@ -8,6 +8,7 @@
  */
 
 import { chromium } from 'playwright';
+import type { Page, Browser, BrowserContext, Cookie } from 'playwright';
 import { readFile } from 'fs/promises';
 import type {
   IPlatformPlugin,
@@ -57,24 +58,30 @@ export default class XPlugin implements IPlatformPlugin {
     const maxItems = options.maxItems || options.maxTweets || 50;
     const scrollWaitTime = options.scrollWaitTime || 2000;
 
-    let browser;
+    let browser: Browser | undefined;
+    let context: BrowserContext | undefined;
+    let page: Page | undefined;
+    const usePool = !options.debug && options.browserPool;
 
     try {
-      // 启动浏览器
-      browser = await chromium.launch({
-        headless: !options.debug,
-        slowMo: options.debug ? 100 : 0,
-      });
-
-      const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport: { width: 1280, height: 800 },
-      });
+      if (usePool) {
+        context = await options.browserPool!.acquire(this.name, options.browser || 'chrome');
+      } else {
+        // 启动浏览器
+        browser = await chromium.launch({
+          headless: !options.debug,
+          slowMo: options.debug ? 100 : 0,
+        });
+        context = await browser.newContext({
+          userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          viewport: { width: 1280, height: 800 },
+        });
+      }
 
       // 加载 cookies（如果存在）
       await this.loadCookies(context, options.browser || 'chrome');
 
-      const page = await context.newPage();
+      page = await context.newPage();
       page.setDefaultTimeout(timeout);
       page.setDefaultNavigationTimeout(timeout);
 
@@ -118,7 +125,12 @@ export default class XPlugin implements IPlatformPlugin {
         scrapedAt: new Date().toISOString(),
       };
     } finally {
-      if (browser) {
+      if (page) {
+        await page.close().catch((err) => console.warn('[X] Warning:', err));
+      }
+      if (usePool && options.browserPool && context) {
+        await options.browserPool.release(this.name, options.browser || 'chrome', context);
+      } else if (browser) {
         await browser.close();
       }
     }
@@ -128,12 +140,12 @@ export default class XPlugin implements IPlatformPlugin {
    * 列表模式：刮削博主/频道的时间线
    */
   private async scrapeList(
-    page: any,
+    page: Page,
     url: string,
     options: {
       maxItems: number;
       scrollWaitTime: number;
-      strategy: string;
+      strategy: ScrollStrategy;
       debug?: boolean;
     }
   ): Promise<ScrapeResult> {
@@ -179,12 +191,13 @@ export default class XPlugin implements IPlatformPlugin {
       return link?.getAttribute('href')?.split('/')[1];
     });
 
+
     if (author) {
       const profileUrl = `https://x.com/${author}`;
       console.log(`[X] Redirecting to profile: ${profileUrl}`);
       await page.goto(profileUrl, { waitUntil: 'networkidle' });
-      await this.waitForInitialLoad(page);
-
+      // 修复：waitForInitialLoad 方法不存在，改为等待内容渲染
+      await this.waitForContentRender(page, { timeout: 15000, debug: options.debug });
       // 递归调用（但已经是主页，不会进入这个分支）
       return this.scrapeList(page, profileUrl, options);
     }
@@ -196,10 +209,10 @@ export default class XPlugin implements IPlatformPlugin {
    * 详情模式：刮削单条推文及其回复线程
    */
   private async scrapeDetail(
-    page: any,
+    page: Page,
     url: string,
     options: {
-      strategy: string;
+      strategy: ScrollStrategy;
       maxItems: number;
       scrollWaitTime: number;
       debug?: boolean;
@@ -216,7 +229,7 @@ export default class XPlugin implements IPlatformPlugin {
       // max 或 all 策略：滚动加载更多（包括回复）
       tweets = await this.scrollAndCollect(
         page,
-        options.strategy as any,
+        options.strategy,
         options.maxItems,
         options.scrollWaitTime,
         options.debug
@@ -256,7 +269,7 @@ export default class XPlugin implements IPlatformPlugin {
    * 等待页面初始加载
    */
   private async waitForContentRender(
-    page: any,
+    page: Page,
     options: { timeout: number; debug?: boolean }
   ): Promise<boolean> {
     const startTime = Date.now();
@@ -293,7 +306,7 @@ export default class XPlugin implements IPlatformPlugin {
               await page.waitForTimeout(30000);
             }
           }
-        } catch {
+        } catch (err) { console.warn('[X] Warning:', err);
           // 忽略检查错误
         }
       }
@@ -319,7 +332,7 @@ export default class XPlugin implements IPlatformPlugin {
                 return true;
               }
             }
-          } catch {
+          } catch (err) { console.warn('[X] Warning:', err);
             // 忽略检查错误
           }
         }
@@ -341,7 +354,7 @@ export default class XPlugin implements IPlatformPlugin {
   /**
    * 检查登录状态
    */
-  private async checkLoginStatus(page: any): Promise<boolean> {
+  private async checkLoginStatus(page: Page): Promise<boolean> {
     try {
       // 检查是否有登录用户的特征元素
       const avatar = await page.$('a[href="/settings/profile"]');
@@ -369,7 +382,7 @@ export default class XPlugin implements IPlatformPlugin {
   /**
    * 加载 cookies
    */
-  private async loadCookies(context: any, browserName: string): Promise<void> {
+  private async loadCookies(context: BrowserContext, browserName: string): Promise<void> {
     const cookiePath = `${this.cookieCacheDir}/x_${browserName}.txt`;
 
     try {
@@ -390,7 +403,7 @@ export default class XPlugin implements IPlatformPlugin {
           console.log(`[X] Cookies expired (${Math.floor(age / 3600000)}h old), will re-extract`);
           cookieContent = null;
         }
-      } catch {
+      } catch (err: unknown) {
         console.log('[X] No cached cookies found');
       }
 
@@ -414,7 +427,7 @@ export default class XPlugin implements IPlatformPlugin {
         console.log(`[X] Last cookie expires: ${cookies[cookies.length-1]?.expires} (type: ${typeof cookies[cookies.length-1]?.expires})`);
 
         // 过滤掉无效的 cookies
-        const validCookies = cookies.filter((c: any) => {
+        const validCookies = cookies.filter((c) => {
           const valid = typeof c.expires === 'number' && (c.expires === -1 || c.expires > 0);
           if (!valid) {
             console.log(`[X] Invalid cookie filtered: ${c.name}, expires=${c.expires}`);
@@ -427,7 +440,7 @@ export default class XPlugin implements IPlatformPlugin {
         console.log(`[X] Loaded ${validCookies.length} cookies`);
 
         // 验证 cookies 是否包含关键登录凭证
-        const hasAuthToken = cookies.some((c: any) =>
+        const hasAuthToken = cookies.some((c) =>
           c.name.includes('auth') || c.name.includes('session') || c.name === 'ct0' || c.name === 'twid'
         );
 
@@ -454,7 +467,7 @@ export default class XPlugin implements IPlatformPlugin {
 
     return new Promise((resolve) => {
       // 确保目录存在
-      mkdir(dirname(outputPath), { recursive: true }).catch(() => {});
+      mkdir(dirname(outputPath), { recursive: true }).catch((err: unknown) => console.warn('[X] Warning:', err));
 
       // 使用 yt-dlp 提取 cookies
       const proc = spawn('yt-dlp', [
@@ -470,15 +483,15 @@ export default class XPlugin implements IPlatformPlugin {
       let stdout = '';
       let stderr = '';
 
-      proc.stdout.on('data', (data) => {
+      proc.stdout.on('data', (data: Buffer) => {
         stdout += data.toString();
       });
 
-      proc.stderr.on('data', (data) => {
+      proc.stderr.on('data', (data: Buffer) => {
         stderr += data.toString();
       });
 
-      proc.on('close', async (code) => {
+      proc.on('close', async (code: number) => {
         if (code === 0) {
           try {
             // 读取生成的 cookies 文件
@@ -486,7 +499,7 @@ export default class XPlugin implements IPlatformPlugin {
             const content = await readFile(outputPath, 'utf-8');
             console.log(`[X] Cookies extracted and saved to: ${outputPath}`);
             resolve(content);
-          } catch (err) {
+          } catch (err: unknown) {
             console.error('[X] Failed to read extracted cookies:', err);
             resolve(null);
           }
@@ -496,7 +509,7 @@ export default class XPlugin implements IPlatformPlugin {
         }
       });
 
-      proc.on('error', (err) => {
+      proc.on('error', (err: unknown) => {
         console.error('[X] Failed to spawn yt-dlp:', err);
         resolve(null);
       });
@@ -506,8 +519,8 @@ export default class XPlugin implements IPlatformPlugin {
   /**
    * 解析 Netscape cookies 格式
    */
-  private parseNetscapeCookies(content: string, url: string): any[] {
-    const cookies: any[] = [];
+  private parseNetscapeCookies(content: string, url: string): Cookie[] {
+    const cookies: Cookie[] = [];
     const lines = content.split('\n');
     const targetDomain = new URL(url).hostname;
 
@@ -550,7 +563,7 @@ export default class XPlugin implements IPlatformPlugin {
           expiresValue = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60;
         }
 
-        const cookie: any = {
+        const cookie: Cookie = {
           domain: normalizedDomain,
           path: path || '/',
           secure: secure === 'TRUE',
@@ -571,12 +584,12 @@ export default class XPlugin implements IPlatformPlugin {
   /**
    * 提取当前可见的推文
    */
-  private async extractVisibleTweets(page: any): Promise<TweetData[]> {
+  private async extractVisibleTweets(page: Page): Promise<TweetData[]> {
     return page.evaluate(() => {
       const tweets: TweetData[] = [];
       const articles = document.querySelectorAll('article[data-testid="tweet"]');
 
-      articles.forEach((article) => {
+      articles.forEach((article: Element) => {
         const tweet = extractTweetData(article);
         if (tweet) tweets.push(tweet);
       });
@@ -595,7 +608,7 @@ export default class XPlugin implements IPlatformPlugin {
 
         // 提取时间
         const timeEl = article.querySelector('time');
-        const publishedAt = timeEl?.getAttribute('datetime');
+        const publishedAt = timeEl?.getAttribute('datetime') ?? undefined;
 
         // 提取互动数据
         const stats = article.querySelectorAll('[data-testid="app-text-transition-container"]');
@@ -606,8 +619,8 @@ export default class XPlugin implements IPlatformPlugin {
         // 提取媒体
         const images = article.querySelectorAll('img[src*="pbs.twimg.com"]');
         const media: MediaItem[] = [];
-        images.forEach((img) => {
-          const src = img.getAttribute('src');
+        images.forEach((img: Element) => {
+          const src = (img as HTMLImageElement).getAttribute('src');
           if (src && !src.includes('profile') && !src.includes('emoji')) {
             media.push({ type: 'image', url: src.replace(/\?.*$/, '') });
           }
@@ -630,7 +643,7 @@ export default class XPlugin implements IPlatformPlugin {
    * 滚动并收集推文
    */
   private async scrollAndCollect(
-    page: any,
+    page: Page,
     strategy: ScrollStrategy,
     maxTweets: number,
     waitTime: number,

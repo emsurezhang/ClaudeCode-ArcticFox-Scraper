@@ -1,0 +1,67 @@
+<body style="overflow: hidden;">
+  <div id="root" style="display: block; z-index: 111111; position: fixed; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.514); margin: auto; inset: 0px;"><iframe src="https://rmc.bytedance.com/verifycenter/captcha/v2?from=iframe&amp;fp=verify_mn7hzzzw_HalDsA7J_2yeW_4Z3X_B1lM_4Goq3dyeCxgL&amp;env=%7B%22screen%22%3A%7B%22w%22%3A1366%2C%22h%22%3A768%7D%2C%22browser%22%3A%7B%22w%22%3A1368%2C%22h%22%3A848%7D%2C%22page%22%3A%7B%22w%22%3A1366%2C%22h%22%3A768%7D%2C%22document%22%3A%7B%22width%22%3A1366%7D%2C%22product_host%22%3A%22www.douyin.com%22%2C%22vc_version%22%3A%221.0.0.293%22%2C%22maskTime%22%3A1777037969165%2C%22h5_check_version%22%3A%223.5.2%22%7D&amp;aid=6383&amp;scene_level=p2&amp;host=https%3A%2F%2Fverify.zijieapi.com&amp;hideCloseBtn=true&amp;verify_data=%7B%22code%22%3A%2210000%22%2C%22from%22%3A%22%22%2C%22type%22%3A%22verify%22%2C%22version%22%3A%22%22%2C%22region%22%3A%22cn%22%2C%22subtype%22%3A%22slide%22%2C%22ui_type%22%3A%22%22%2C%22detail%22%3A%22dFLDOc9EvN64NvKcqPR5JesqUEjWLUXyvrmnI7qe1zd*f3C9yrTuevX6Yk4PFzuW67SFqVgoADPmeTeu27QeGedjPqphsPkwCnLZpjAU92dGxM6kS3chIVYZulTv1qILPWOgwoLdihFRKbjUqhyanGAAtB8ucSrAjAR3sIcwF04YjR3NJe4NTUyZPCMgK9eg2EV1onrwtHGLV-NoC9eYkldXpe6Xc-dJudxKian96UXKJ6SWwP3bS7fhqorMbru7lpSyzYVPzAHIQxVOQiJiPQEj4jdBdjPd*pORNqBSo8wVuC*m7InGhRRt1b6Z7hFDU0rdiZ0P4laIvKa*9ZC6XQ1KYdYpPZ8WLmuxQZPaOp2J2ETbSlNAul-u1rcBp7NAJIQnYtI04pCDE*sL51jmJO5q%22%2C%22verify_event%22%3A%2215698%22%2C%22fp%22%3A%22verify_mn7hzzzw_HalDsA7J_2yeW_4Z3X_B1lM_4Goq3dyeCxgL%22%2C%22server_sdk_env%22%3A%22%7B%5C%22idc%5C%22%3A%5C%22hl%5C%22%2C%5C%22region%5C%22%3A%5C%22CN%5C%22%2C%5C%22server_type%5C%22%3A%5C%22whale%5C%22%7D%22%2C%22log_id%22%3A%2220260424213928D1B69EDA2540A49B6E08%22%2C%22is_assist_mobile%22%3Afalse%2C%22is_complex_sms%22%3Afalse%2C%22identity_action%22%3A%22%22%2C%22identity_scene%22%3A%22%22%2C%22login_status%22%3A0%2C%22aid%22%3A0%7D&amp;extraConfig=%7B%7D" style="border-width: medium; border-style: none; border-color: currentcolor; border-image: initial; display: block; visibility: visible; border-radius: 6px; overflow: hidden; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 380px; height: 384px;"></iframe></div>
+  <div class="middle_page_loading">
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+    <span></span>
+  </div>
+
+<script nonce="argus-csp-token">
+    function parseCookie() {
+      var obj = document.cookie.split(';')
+        .filter(function(item) {
+          return !!item.trim();
+        })
+        .reduce(function(obj, item) {
+          var pairs = item.split('=');
+          var key = pairs[0] && pairs[0].trim();
+          var val = pairs[1] && pairs[1].trim();
+          obj[key] = val;
+          return obj;
+        }, {});
+      return obj;
+    }
+    function setCookie(name, value) {
+      try {
+        if (window.sessionStorage) {
+          if (!window.sessionStorage.getItem(name)) {
+            window.sessionStorage.setItem(name, value)
+          }
+        }
+        if (window.localStorage) {
+          if (!window.localStorage.getItem(name)) {
+            window.localStorage.setItem(name, value)
+          }
+        }
+        if (!!!parseCookie()[name]) {
+          document.cookie = name + "=" + value + ";";
+        }
+      } catch (e) { }
+    }
+    setCookie("__ac_referer", document.referrer || "__ac_blank");
+    const options = {
+      commonOptions: {
+        aid: 6383,
+        iid: '0',
+        did: '0',
+      },
+      captchaOptions: {
+        ele: 'root',
+        hideCloseBtn: true,
+        showMode: 'mask',
+        successCb: function(){
+          setTimeout(() => {
+            location.reload();
+          }, 2000)
+        },
+      },
+    }
+    const verify_data = {"code":"10000","from":"","type":"verify","version":"","region":"cn","subtype":"slide","ui_type":"","detail":"dFLDOc9EvN64NvKcqPR5JesqUEjWLUXyvrmnI7qe1zd*f3C9yrTuevX6Yk4PFzuW67SFqVgoADPmeTeu27QeGedjPqphsPkwCnLZpjAU92dGxM6kS3chIVYZulTv1qILPWOgwoLdihFRKbjUqhyanGAAtB8ucSrAjAR3sIcwF04YjR3NJe4NTUyZPCMgK9eg2EV1onrwtHGLV-NoC9eYkldXpe6Xc-dJudxKian96UXKJ6SWwP3bS7fhqorMbru7lpSyzYVPzAHIQxVOQiJiPQEj4jdBdjPd*pORNqBSo8wVuC*m7InGhRRt1b6Z7hFDU0rdiZ0P4laIvKa*9ZC6XQ1KYdYpPZ8WLmuxQZPaOp2J2ETbSlNAul-u1rcBp7NAJIQnYtI04pCDE*sL51jmJO5q","verify_event":"15698","fp":"verify_mn7hzzzw_HalDsA7J_2yeW_4Z3X_B1lM_4Goq3dyeCxgL","server_sdk_env":"{\"idc\":\"hl\",\"region\":\"CN\",\"server_type\":\"whale\"}","log_id":"20260424213928D1B69EDA2540A49B6E08","is_assist_mobile":false,"is_complex_sms":false,"identity_action":"","identity_scene":"","login_status":0,"aid":0}
+    window.TTGCaptcha.init(options)
+    window.TTGCaptcha.render({
+        verify_data
+    })
+</script>
+</body>

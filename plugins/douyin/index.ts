@@ -6,8 +6,8 @@
 
 import { spawn } from 'child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { mkdir, readFile, unlink, stat, rm } from 'fs/promises';
-import { join, resolve } from 'path';
+import { mkdir, readFile, unlink, stat, rm, rename } from 'fs/promises';
+import { join, resolve, basename } from 'path';
 import { pipeline } from 'stream/promises';
 import type {
   IPlatformPlugin,
@@ -39,6 +39,12 @@ interface DouYinScrapeOptions extends ScrapeOptions {
 const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
+interface DouYinPluginConfig {
+  listPageLoadWaitMs: number;
+  listVideoSelectorTimeoutMs: number;
+  listScrollWaitMs: number;
+}
+
 export default class DouYinPlugin implements IPlatformPlugin {
   readonly name = 'douyin';
   readonly hostnames = ['douyin.com', 'www.douyin.com', 'v.douyin.com', 'm.douyin.com'];
@@ -51,9 +57,26 @@ export default class DouYinPlugin implements IPlatformPlugin {
 
   private tempDir = './cache/temp';
   private modelsDir = './models';
+  private config: DouYinPluginConfig;
 
   constructor() {
-    mkdir(this.tempDir, { recursive: true }).catch(() => {});
+    mkdir(this.tempDir, { recursive: true }).catch((err) => console.warn('[DouYin] Warning:', err));
+    this.config = this.loadConfig();
+  }
+
+  private loadConfig(): DouYinPluginConfig {
+    try {
+      const configPath = new URL('./config.json', import.meta.url);
+      const content = readFileSync(configPath, 'utf-8');
+      return JSON.parse(content) as DouYinPluginConfig;
+    } catch {
+      console.log('[DouYin] Using default config');
+      return {
+        listPageLoadWaitMs: 8000,
+        listVideoSelectorTimeoutMs: 20000,
+        listScrollWaitMs: 4000,
+      };
+    }
   }
 
   canHandle(url: string): boolean {
@@ -84,22 +107,28 @@ export default class DouYinPlugin implements IPlatformPlugin {
 
     const pw = await getPlaywright();
     let browser: import('playwright').Browser | null = null;
+    let context: import('playwright').BrowserContext | undefined;
+    let page: import('playwright').Page | undefined;
+    const usePool = !options.debug && options.browserPool;
 
     try {
-      browser = await pw.chromium.launch({
-        headless: !options.debug,
-        args: ['--disable-blink-features=AutomationControlled'],
-      });
-
-      const context = await browser.newContext({
-        viewport: { width: 1366, height: 768 },
-        userAgent: BROWSER_UA,
-      });
+      if (usePool) {
+        context = await options.browserPool!.acquire(this.name, options.browser || 'chrome');
+      } else {
+        browser = await pw.chromium.launch({
+          headless: !options.debug,
+          args: ['--disable-blink-features=AutomationControlled'],
+        });
+        context = await browser.newContext({
+          viewport: { width: 1366, height: 768 },
+          userAgent: BROWSER_UA,
+        });
+      }
 
       // 加载并注入 cookies
       await this.injectCookies(context, options.browser || 'chrome');
 
-      const page = await context.newPage();
+      page = await context.newPage();
 
       // 导航到用户主页
       console.log('[DouYin] Navigating to user page...');
@@ -108,9 +137,17 @@ export default class DouYinPlugin implements IPlatformPlugin {
         timeout: 45000,
       });
 
-      // 等待页面加载
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(3000);
+      // 等待页面加载 — 抖音用户页持续有统计请求，networkidle 很难达到，改用 load 事件
+      await page.waitForLoadState('load', { timeout: 15000 }).catch((err) => console.warn('[DouYin] Warning:', err));
+      console.log('[DouYin] Page loaded, waiting for SPA content...');
+      await page.waitForTimeout(this.config.listPageLoadWaitMs);
+
+      // 等待视频列表出现
+      const hasVideos = await page.waitForSelector('a[href*="/video/"]', { timeout: this.config.listVideoSelectorTimeoutMs }).catch(() => null);
+      if (!hasVideos) {
+        const bodyHtml = await page.evaluate(() => document.body.innerHTML.slice(0, 2000));
+        console.log('[DouYin] No video links found. Body HTML snippet:', bodyHtml);
+      }
 
       // 获取用户信息和视频列表
       const userInfo = await page.evaluate(() => {
@@ -136,6 +173,8 @@ export default class DouYinPlugin implements IPlatformPlugin {
 
         // 尝试多种选择器获取视频列表
         const videoCardSelectors = [
+          'li a[href*="/video/"]',
+          '.wqW3g_Kl a[href*="/video/"]',
           '[data-e2e="user-post-list"] > div > a',
           '[data-e2e="user-post-list"] a[href*="/video/"]',
           '.B6JkCp0k a[href*="/video/"]',
@@ -172,9 +211,9 @@ export default class DouYinPlugin implements IPlatformPlugin {
 
                 // 获取标题
                 let title = '';
-                const titleSelectors = ['img[alt]', '.title', '[class*="title"]', '.desc'];
+                const titleSelectors = ['img[alt]', 'p.EtttsrEw', 'p.eJFBAbdI', '.title', '[class*="title"]', '.desc'];
                 for (const titleSel of titleSelectors) {
-                  const titleEl = el.querySelector(titleSel);
+                  const titleEl = el.querySelector(titleSel) || el.closest('li')?.querySelector(titleSel);
                   if (titleEl) {
                     title = titleEl.getAttribute('alt') || titleEl.textContent || '';
                     if (title) break;
@@ -204,7 +243,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
 
       while (userInfo.videos.length < maxItems && scrollAttempts < maxScrollAttempts) {
         await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(this.config.listScrollWaitMs);
 
         const newVideos = await page.evaluate(() => {
           const videos: Array<{
@@ -215,7 +254,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
           }> = [];
 
           const videoElements = document.querySelectorAll(
-            'a[href*="/video/"], [data-e2e="user-post-list"] a, .B6JkCp0k a, .B6JkCp0k a[href*="/video/"]'
+            'li a[href*="/video/"], .wqW3g_Kl a[href*="/video/"], a[href*="/video/"]'
           );
 
           videoElements.forEach((el) => {
@@ -223,9 +262,13 @@ export default class DouYinPlugin implements IPlatformPlugin {
             if (href && href.includes('/video/')) {
               const videoId = href.split('/video/')[1]?.split('?')[0];
               if (videoId && !videos.find(v => v.videoId === videoId)) {
-                const img = el.querySelector('img') || el.closest('div')?.querySelector('img');
+                const img = el.querySelector('img');
                 const coverUrl = img?.getAttribute('src') || '';
-                const title = img?.getAttribute('alt') || '';
+                let title = img?.getAttribute('alt') || '';
+                if (!title) {
+                  const p = el.querySelector('p.EtttsrEw') || el.closest('li')?.querySelector('p.EtttsrEw') || el.closest('li')?.querySelector('p.eJFBAbdI');
+                  title = p?.textContent || '';
+                }
 
                 videos.push({
                   title,
@@ -281,8 +324,13 @@ export default class DouYinPlugin implements IPlatformPlugin {
         scrapedAt: new Date().toISOString(),
       };
     } finally {
-      if (browser) {
-        await browser.close().catch(() => {});
+      if (page) {
+        await page.close().catch((err) => console.warn('[DouYin] Warning:', err));
+      }
+      if (usePool && options.browserPool && context) {
+        await options.browserPool.release(this.name, options.browser || 'chrome', context);
+      } else if (browser) {
+        await browser.close().catch((err) => console.warn('[DouYin] Warning:', err));
       }
     }
   }
@@ -298,7 +346,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
     let audioPath: string | undefined;
     let transcript: string | undefined;
     let transcriptLanguage: string | undefined;
-    let metadata: any = {};
+    let metadata: Record<string, unknown> = {};
 
     try {
       const result = await this.captureAndDownloadAudio(url, outputDir, options);
@@ -318,12 +366,21 @@ export default class DouYinPlugin implements IPlatformPlugin {
     }
 
     const shouldKeepAudio = options.downloadAudio;
-    if (!shouldKeepAudio && audioPath) {
-      await unlink(audioPath).catch(() => {});
-      // 清理整个视频临时目录（包含 WAV、SRT 等中间文件）
-      await rm(outputDir, { recursive: true, force: true }).catch(() => {});
-      console.log(`[DouYin] Cleaned up temp files in ${outputDir}`);
+    let finalAudioPath = audioPath;
+    if (shouldKeepAudio && audioPath) {
+      const dateDir = options.audioOutputDir || join(resolve('..'), 'data', new Date().toISOString().slice(0, 10));
+      await mkdir(dateDir, { recursive: true });
+      const destPath = join(dateDir, `${videoId}.m4a`);
+      await rename(audioPath, destPath);
+      console.log(`[DouYin] Audio saved to: ${destPath}`);
+      finalAudioPath = destPath;
+    } else if (!shouldKeepAudio && audioPath) {
+      await unlink(audioPath).catch((err) => console.warn('[DouYin] Warning:', err));
     }
+
+    // 清理整个视频临时目录（包含 WAV、SRT 等中间文件）
+    await rm(outputDir, { recursive: true, force: true }).catch((err) => console.warn('[DouYin] Warning:', err));
+    console.log(`[DouYin] Cleaned up temp files in ${outputDir}`);
 
     return {
       url,
@@ -334,7 +391,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
       publishedAt: metadata.publishedAt,
       transcript,
       transcriptLanguage,
-      audioPath: shouldKeepAudio ? audioPath : undefined,
+      audioPath: finalAudioPath,
       metadata: {
         duration: metadata.duration,
         coverUrl: metadata.coverUrl,
@@ -350,32 +407,38 @@ export default class DouYinPlugin implements IPlatformPlugin {
     pageUrl: string,
     outputDir: string,
     options: ScrapeOptions
-  ): Promise<{ audioPath: string; metadata: any }> {
+  ): Promise<{ audioPath: string; metadata: Record<string, unknown> }> {
     const pw = await getPlaywright();
     const axios = await getAxios();
 
     const audioPath = join(outputDir, 'audio.m4a');
     let browser: import('playwright').Browser | null = null;
+    let context: import('playwright').BrowserContext | undefined;
+    let page: import('playwright').Page | undefined;
     let audioUrl: string | null = null;
-    const metadata: any = {};
+    const metadata: Record<string, unknown> = {};
+    const usePool = !options.debug && options.browserPool;
 
     try {
       console.log('[DouYin] Launching browser to capture audio...');
 
-      browser = await pw.chromium.launch({
-        headless: !options.debug,
-        args: ['--disable-blink-features=AutomationControlled'],
-      });
-
-      const context = await browser.newContext({
-        viewport: { width: 1366, height: 768 },
-        userAgent: BROWSER_UA,
-      });
+      if (usePool) {
+        context = await options.browserPool!.acquire(this.name, options.browser || 'chrome');
+      } else {
+        browser = await pw.chromium.launch({
+          headless: !options.debug,
+          args: ['--disable-blink-features=AutomationControlled'],
+        });
+        context = await browser.newContext({
+          viewport: { width: 1366, height: 768 },
+          userAgent: BROWSER_UA,
+        });
+      }
 
       // 加载并注入 cookies
       await this.injectCookies(context, options.browser || 'chrome');
 
-      const page = await context.newPage();
+      page = await context.newPage();
 
       // 设置拦截器捕获音频请求
       let resolveCapture: (() => void) | null = null;
@@ -407,7 +470,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
               metadata.coverUrl = detail.video?.cover?.url_list?.[0];
               metadata.createTime = detail.create_time;
             }
-          } catch {
+          } catch (err) { console.warn('[DouYin] Warning:', err);
             // 忽略解析错误
           }
         }
@@ -426,7 +489,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
             ...capturedHeaders,
             ...(await response.request().allHeaders()),
           };
-        } catch {
+        } catch (err) { console.warn('[DouYin] Warning:', err);
           // 忽略
         }
 
@@ -443,7 +506,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
       });
 
       // 等待网络空闲 + 额外时间让播放器加载
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch((err) => console.warn('[DouYin] Warning:', err));
       await page.waitForTimeout(5000);
 
       // 如果还没捕获到，等待更长时间
@@ -453,8 +516,8 @@ export default class DouYinPlugin implements IPlatformPlugin {
       }
 
       // 等待页面关键元素渲染（SPA 异步挂载）
-      await page.waitForSelector('[data-e2e="video-desc"]', { timeout: 10000 }).catch(() => {});
-      await page.waitForSelector('.video-create-time', { timeout: 10000 }).catch(() => {});
+      await page.waitForSelector('[data-e2e="video-desc"]', { timeout: 10000 }).catch((err) => console.warn('[DouYin] Warning:', err));
+      await page.waitForSelector('.video-create-time', { timeout: 10000 }).catch((err) => console.warn('[DouYin] Warning:', err));
       await page.waitForTimeout(2000);
 
       // 从页面 DOM 提取发布时间和标题
@@ -512,7 +575,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
           if (ctxCookies.length > 0) {
             cookieHeader = ctxCookies.map(c => `${c.name}=${c.value}`).join('; ');
           }
-        } catch {
+        } catch (err) { console.warn('[DouYin] Warning:', err);
           // 忽略
         }
       }
@@ -579,8 +642,13 @@ export default class DouYinPlugin implements IPlatformPlugin {
 
       return { audioPath, metadata };
     } finally {
-      if (browser) {
-        await browser.close().catch(() => {});
+      if (page) {
+        await page.close().catch((err) => console.warn('[DouYin] Warning:', err));
+      }
+      if (usePool && options.browserPool && context) {
+        await options.browserPool.release(this.name, options.browser || 'chrome', context);
+      } else if (browser) {
+        await browser.close().catch((err) => console.warn('[DouYin] Warning:', err));
       }
     }
   }
@@ -618,12 +686,16 @@ export default class DouYinPlugin implements IPlatformPlugin {
 
     const monthMatch = trimmed.match(/(\d+)\s*月前/);
     if (monthMatch) {
-      return new Date(now.getTime() - parseInt(monthMatch[1]) * 30 * 24 * 60 * 60 * 1000);
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - parseInt(monthMatch[1]));
+      return d;
     }
 
     const yearMatch = trimmed.match(/(\d+)\s*年前/);
     if (yearMatch) {
-      return new Date(now.getTime() - parseInt(yearMatch[1]) * 365 * 24 * 60 * 60 * 1000);
+      const d = new Date(now);
+      d.setFullYear(d.getFullYear() - parseInt(yearMatch[1]));
+      return d;
     }
 
     return undefined;
@@ -747,7 +819,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
       if (lastPart && lastPart.length > 10) {
         return lastPart;
       }
-    } catch {
+    } catch (err) { console.warn('[DouYin] Warning:', err);
       // 忽略
     }
 

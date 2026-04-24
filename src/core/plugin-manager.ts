@@ -6,7 +6,7 @@ import { readdir, stat, readFile } from 'fs/promises';
 import { join, resolve, basename } from 'path';
 import { pathToFileURL } from 'url';
 import chokidar from 'chokidar';
-import type { IPluginManager, IPlatformPlugin, PluginManifest } from '../interfaces/index.js';
+import type { IPluginManager, IPlatformPlugin, PluginManifest, PluginCapabilities } from '../interfaces/index.js';
 
 interface LoadedPlugin {
   plugin: IPlatformPlugin;
@@ -247,7 +247,7 @@ export class PluginManager implements IPluginManager {
   /**
    * 获取所有插件信息
    */
-  getPluginInfos(): { name: string; hostnames: string[]; capabilities: any }[] {
+  getPluginInfos(): { name: string; hostnames: string[]; capabilities: PluginCapabilities }[] {
     return Array.from(this.plugins.values()).map(({ plugin }) => ({
       name: plugin.name,
       hostnames: plugin.hostnames,

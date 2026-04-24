@@ -2,14 +2,23 @@
   "name": "scraper-plugin-x",
   "version": "1.0.0",
   "main": "index.ts",
+  "type": "module",
   "plugin": {
     "name": "x",
-    "hostnames": ["x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com"],
+    "hostnames": [
+      "x.com",
+      "twitter.com",
+      "mobile.x.com",
+      "mobile.twitter.com"
+    ],
     "capabilities": {
       "scrapeMetadata": true,
       "scrapeContent": true,
       "downloadAudio": false,
       "extractTranscript": false
     }
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0"
   }
 }

@@ -131,7 +131,7 @@ export class WhisperTranscriber {
 
       // 清理临时分片文件（如果不是原文件）
       if (segments[i] !== audioPath) {
-        await unlink(segments[i]).catch(() => {});
+        await unlink(segments[i]).catch((err) => console.warn('[Whisper] Warning:', err));
       }
     }
 
@@ -246,7 +246,7 @@ export class WhisperTranscriber {
 
         splitProc.on('close', async (splitCode) => {
           // 清理转换后的临时文件
-          await unlink(convertedPath).catch(() => {});
+          await unlink(convertedPath).catch((err) => console.warn('[Whisper] Warning:', err));
 
           if (splitCode === 0) {
             // 获取生成的文件列表
@@ -320,7 +320,7 @@ export class WhisperTranscriber {
           const result = JSON.parse(content);
 
           // 清理临时文件
-          await unlink(jsonPath).catch(() => {});
+          await unlink(jsonPath).catch((err) => console.warn('[Whisper] Warning:', err));
 
           // 提取文本 - 新版 whisper-cli 使用 transcription 数组
           let text = '';
@@ -329,7 +329,7 @@ export class WhisperTranscriber {
             text = result.text.trim();
           } else if (result.transcription && Array.isArray(result.transcription)) {
             // 新版格式 - 合并所有片段
-            text = result.transcription.map((t: any) => t.text).join('');
+            text = result.transcription.map((t: { text?: string }) => t.text ?? '').join('');
           }
 
           const language = result.result?.language || result.language || 'unknown';
