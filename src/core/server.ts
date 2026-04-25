@@ -14,18 +14,22 @@ import { createAuthMiddleware } from '../utils/auth.js';
 import { BrowserPool } from '../utils/browser-pool.js';
 import type { ServerConfig, ScrapeRequest, FeedEntry, ScrapeOptions } from '../interfaces/index.js';
 import { FeedMonitor } from './feed-monitor.js';
+import { createLogger, getLogLevel, setLogLevel } from './logger.js';
+
+const logger = createLogger('Server');
 
 // 解析命令行参数
 const args = process.argv.slice(2);
 const isDebugMode = args.includes('--debug');
 
 if (isDebugMode) {
-  console.log('[Server] Debug mode enabled - Playwright browsers will be visible');
+  logger.info('Debug mode enabled - Playwright browsers will be visible');
 }
 
 // 默认配置
 const defaultConfig: ServerConfig = {
   port: 3000,
+  logLevel: 'debug',
   pluginsDir: './plugins',
   hotReload: true,
   defaultOptions: {
@@ -54,7 +58,7 @@ async function loadConfig(): Promise<ServerConfig> {
     validateConfig(userConfig);
     return { ...defaultConfig, ...userConfig };
   } catch {
-    console.log('[Server] No config.json found, using defaults');
+    logger.info('No config.json found, using defaults');
     return defaultConfig;
   }
 }
@@ -62,6 +66,9 @@ async function loadConfig(): Promise<ServerConfig> {
 function validateConfig(config: Record<string, unknown>): void {
   if (config.port !== undefined && (typeof config.port !== 'number' || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535)) {
     throw new Error('Invalid config: port must be an integer between 1 and 65535');
+  }
+  if (config.logLevel !== undefined && (typeof config.logLevel !== 'string' || !['debug', 'info', 'warn', 'error'].includes(config.logLevel))) {
+    throw new Error('Invalid config: logLevel must be one of debug/info/warn/error');
   }
   if (config.pluginsDir !== undefined && typeof config.pluginsDir !== 'string') {
     throw new Error('Invalid config: pluginsDir must be a string');
@@ -83,6 +90,8 @@ function validateConfig(config: Record<string, unknown>): void {
 async function main() {
   // 加载配置
   const config = await loadConfig();
+  setLogLevel(config.logLevel || 'debug');
+  logger.info(`System log level set to ${getLogLevel()}`);
 
   // 初始化 Cookie 管理器
   const cookieManager = new CookieManager(config.cookieCache);
@@ -94,13 +103,13 @@ async function main() {
 
   try {
     const plugins = await pluginManager.loadPluginsFromDirectory(pluginsDir);
-    console.log(`[Server] Loaded ${plugins.length} plugins`);
+    logger.info(`Loaded ${plugins.length} plugins`);
 
     if (config.hotReload) {
       pluginManager.watch(pluginsDir);
     }
   } catch (err) {
-    console.warn('[Server] Failed to load plugins:', err);
+    logger.warn('Failed to load plugins', err);
   }
 
   // 初始化浏览器池
@@ -216,7 +225,8 @@ async function main() {
           reply.code(400);
           return { success: false, error: `URL must use http/https: ${url}` };
         }
-      } catch (err) { console.warn('[Server] Warning:', err);
+      } catch (err) {
+        logger.warn('Invalid URL parse warning', err);
         reply.code(400);
         return { success: false, error: `Invalid URL format: ${url}` };
       }
@@ -247,8 +257,8 @@ async function main() {
       }
     }
 
-    // 合并选项，传入 debug 模式和浏览器池
-    const options = { ...config.defaultOptions, ...body.options, debug: isDebugMode, browserPool };
+    // 合并选项，传入 debug 模式、浏览器池和 Cookie 管理器
+    const options = { ...config.defaultOptions, ...body.options, debug: isDebugMode, browserPool, cookieManager };
 
     // 创建异步任务
     const job = jobManager.createJob(body.urls, options);
@@ -386,7 +396,7 @@ async function main() {
   app.post('/api/feeds/check', async (request, reply) => {
     const body = request.body as { url?: string; options?: ScrapeOptions };
 
-    const options = { ...config.defaultOptions, ...body.options, debug: isDebugMode, browserPool };
+    const options = { ...config.defaultOptions, ...body.options, debug: isDebugMode, browserPool, cookieManager };
 
     try {
       if (body.url) {
@@ -405,21 +415,21 @@ async function main() {
   // 启动服务器
   try {
     await app.listen({ port: config.port, host: '0.0.0.0' });
-      if (!config.auth?.token) {
-      console.warn('[Server] WARNING: API authentication is disabled. Set auth.token in config.json to secure the server.');
+    if (!config.auth?.token) {
+      logger.warn('WARNING: API authentication is disabled. Set auth.token in config.json to secure the server.');
     }
-    console.log(`[Server] Running on http://localhost:${config.port}`);
-    console.log(`[Server] Plugins directory: ${pluginsDir}`);
-    console.log(`[Server] Hot reload: ${config.hotReload ? 'enabled' : 'disabled'}`);
-    console.log(`[Server] Debug mode: ${isDebugMode ? 'enabled' : 'disabled'}`);
+    logger.info(`Running on http://localhost:${config.port}`);
+    logger.info(`Plugins directory: ${pluginsDir}`);
+    logger.info(`Hot reload: ${config.hotReload ? 'enabled' : 'disabled'}`);
+    logger.info(`Debug mode: ${isDebugMode ? 'enabled' : 'disabled'}`);
   } catch (err) {
-    console.error('[Server] Failed to start:', err);
+    logger.error('Failed to start', err);
     process.exit(1);
   }
 
   // 优雅关闭
   const gracefulShutdown = async (signal: string) => {
-    console.log(`[Server] Received ${signal}, shutting down gracefully...`);
+    logger.info(`Received ${signal}, shutting down gracefully...`);
     jobManager.destroy();
     pluginManager.unwatch();
     await browserPool.destroy();
@@ -431,4 +441,6 @@ async function main() {
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  logger.error('Unhandled fatal error', err);
+});

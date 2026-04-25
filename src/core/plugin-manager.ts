@@ -7,6 +7,9 @@ import { join, resolve, basename } from 'path';
 import { pathToFileURL } from 'url';
 import chokidar from 'chokidar';
 import type { IPluginManager, IPlatformPlugin, PluginManifest, PluginCapabilities } from '../interfaces/index.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('PluginManager');
 
 interface LoadedPlugin {
   plugin: IPlatformPlugin;
@@ -35,11 +38,11 @@ export class PluginManager implements IPluginManager {
           const plugin = await this.loadPlugin(pluginPath);
           loaded.push(plugin);
         } catch (err) {
-          console.error(`[PluginManager] Failed to load plugin from ${pluginPath}:`, err);
+          logger.error(`Failed to load plugin from ${pluginPath}`, err);
         }
       }
     } catch (err) {
-      console.warn(`[PluginManager] Plugins directory not found: ${pluginsDir}`);
+      logger.warn(`Plugins directory not found: ${pluginsDir}`, err);
     }
 
     return loaded;
@@ -98,7 +101,7 @@ export class PluginManager implements IPluginManager {
         manifest
       });
 
-      console.log(`[PluginManager] Loaded plugin: ${manifest.name} (${manifest.hostnames.join(', ')})`);
+      logger.info(`Loaded plugin: ${manifest.name} (${manifest.hostnames.join(', ')})`);
 
       return plugin;
     } catch (err) {
@@ -116,7 +119,7 @@ export class PluginManager implements IPluginManager {
     }
 
     this.plugins.delete(name);
-    console.log(`[PluginManager] Unloaded plugin: ${name}`);
+    logger.info(`Unloaded plugin: ${name}`);
   }
 
   /**
@@ -150,7 +153,7 @@ export class PluginManager implements IPluginManager {
    */
   watch(pluginDir: string): void {
     if (this.watcher) {
-      console.warn('[PluginManager] Already watching, stopping previous watcher');
+      logger.warn('Already watching, stopping previous watcher');
       this.watcher.close();
     }
 
@@ -170,9 +173,9 @@ export class PluginManager implements IPluginManager {
           if (this.plugins.has(pluginName)) {
             return; // 已加载，忽略
           }
-          console.log(`[PluginManager] New plugin directory detected: ${pluginName}`);
+          logger.info(`New plugin directory detected: ${pluginName}`);
           this.loadPlugin(path).catch(err => {
-            console.error(`[PluginManager] Failed to auto-load plugin:`, err);
+            logger.error('Failed to auto-load plugin', err);
           });
         }
       })
@@ -182,9 +185,9 @@ export class PluginManager implements IPluginManager {
           const pluginPath = dirname(path);
           if (dirname(pluginPath) === resolvedDir) {
             const pluginName = basename(pluginPath);
-            console.log(`[PluginManager] Plugin changed: ${pluginName}`);
+            logger.info(`Plugin changed: ${pluginName}`);
             this.reloadPlugin(pluginName).catch(err => {
-              console.error(`[PluginManager] Failed to reload plugin:`, err);
+              logger.error('Failed to reload plugin', err);
             });
           }
         }
@@ -193,14 +196,14 @@ export class PluginManager implements IPluginManager {
         // 插件目录删除
         if (dirname(path) === resolvedDir) {
           const pluginName = basename(path);
-          console.log(`[PluginManager] Plugin removed: ${pluginName}`);
+          logger.info(`Plugin removed: ${pluginName}`);
           this.unloadPlugin(pluginName).catch(() => {
             // 可能已经卸载
           });
         }
       });
 
-    console.log(`[PluginManager] Watching directory: ${resolvedDir}`);
+    logger.info(`Watching directory: ${resolvedDir}`);
   }
 
   /**
@@ -210,7 +213,7 @@ export class PluginManager implements IPluginManager {
     if (this.watcher) {
       this.watcher.close();
       this.watcher = undefined;
-      console.log('[PluginManager] Stopped watching');
+      logger.info('Stopped watching');
     }
   }
 

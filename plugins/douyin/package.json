@@ -1,6 +1,7 @@
 {
   "name": "scraper-plugin-douyin",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.ts",
   "plugin": {
     "name": "douyin",

@@ -44,6 +44,8 @@ export interface ScrapeOptions {
   browserPool?: IBrowserPool;
   /** 音频文件输出目录（默认: 项目上一级目录的 data/YYYY-MM-DD/） */
   audioOutputDir?: string;
+  /** Cookie 管理器（由服务器注入） */
+  cookieManager?: ICookieManager;
 }
 
 /** 刮削结果 */
@@ -99,6 +101,26 @@ export interface IPlatformPlugin {
   scrape(url: string, options: ScrapeOptions): Promise<ScrapeResult>;
 }
 
+/**
+ * Playwright addCookies() 兼容的 cookie 记录类型
+ */
+export interface PlaywrightCookieRecord {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+}
+
+/** Netscape cookie 解析选项 */
+export interface ParseCookiesOptions {
+  /** 域名过滤函数：返回 true 保留该 cookie，false 丢弃 */
+  domainFilter?: (domain: string) => boolean;
+}
+
 /** Cookies 缓存管理接口 */
 export interface ICookieManager {
   /**
@@ -137,6 +159,42 @@ export interface ICookieManager {
    * @returns cookies 内容
    */
   getOrExtract(platform: string, browser: string): Promise<string>;
+
+  /**
+   * 解析 Netscape 格式 cookie 文本，返回 Playwright 兼容的 cookie 记录列表
+   * @param content Netscape 格式文本
+   * @param options 解析选项（可选域名过滤）
+   */
+  parseNetscapeCookies(content: string, options?: ParseCookiesOptions): PlaywrightCookieRecord[];
+
+  /**
+   * 将缓存中的 cookies 解析后注入到 Playwright BrowserContext
+   * @param context Playwright BrowserContext
+   * @param platform 平台名称
+   * @param browser 浏览器名称
+   * @param options 解析选项（可选域名过滤）
+   */
+  injectIntoContext(
+    context: import('playwright').BrowserContext,
+    platform: string,
+    browser: string,
+    options?: ParseCookiesOptions,
+  ): Promise<void>;
+
+  /**
+   * 强制刷新 cookies：清除磁盘缓存、从浏览器重新提取、注入到 BrowserContext
+   * @param context Playwright BrowserContext
+   * @param platform 平台名称
+   * @param browser 浏览器名称
+   * @param options 解析选项（可选域名过滤）
+   * @returns true 表示刷新成功，false 表示提取失败
+   */
+  refreshCookies(
+    context: import('playwright').BrowserContext,
+    platform: string,
+    browser: string,
+    options?: ParseCookiesOptions,
+  ): Promise<boolean>;
 }
 
 /** 插件管理器接口 */
@@ -292,6 +350,8 @@ export interface ScrapeError {
 export interface ServerConfig {
   /** 服务器端口 */
   port: number;
+  /** 系统日志级别 */
+  logLevel?: 'debug' | 'info' | 'warn' | 'error';
   /** 外部插件目录路径 */
   pluginsDir?: string;
   /** 是否启用热加载 */
@@ -326,9 +386,29 @@ export interface ServerConfig {
 }
 
 /** 浏览器池接口 */
+export interface BrowserAllocationOptions {
+  usePool?: boolean;
+  headless?: boolean;
+  userAgent?: string;
+  viewport?: {
+    width: number;
+    height: number;
+  };
+}
+
+export interface BrowserAllocationHandle {
+  context: import('playwright').BrowserContext;
+  release(): Promise<void>;
+}
+
 export interface IBrowserPool {
   acquire(platform: string, browserName: string): Promise<import('playwright').BrowserContext>;
   release(platform: string, browserName: string, context: import('playwright').BrowserContext): Promise<void>;
+  allocate?(
+    platform: string,
+    browserName: string,
+    options?: BrowserAllocationOptions,
+  ): Promise<BrowserAllocationHandle>;
   destroy(): Promise<void>;
 }
 

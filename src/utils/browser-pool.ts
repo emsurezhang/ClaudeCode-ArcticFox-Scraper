@@ -4,12 +4,54 @@
  */
 
 import { chromium, Browser, BrowserContext } from 'playwright';
-import type { IBrowserPool } from '../interfaces/index.js';
+import type {
+  IBrowserPool,
+  BrowserAllocationHandle,
+  BrowserAllocationOptions,
+} from '../interfaces/index.js';
 
 export class BrowserPool implements IBrowserPool {
   private browser?: Browser;
   private available = new Map<string, BrowserContext[]>();
   private inUse = new Set<BrowserContext>();
+
+  async allocate(
+    platform: string,
+    browserName: string,
+    options: BrowserAllocationOptions = {},
+  ): Promise<BrowserAllocationHandle> {
+    const usePool = options.usePool !== false;
+
+    if (usePool) {
+      const context = await this.acquire(platform, browserName);
+      return {
+        context,
+        release: async () => {
+          await this.release(platform, browserName, context);
+        },
+      };
+    }
+
+    const browser = await chromium.launch({
+      headless: options.headless ?? true,
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
+
+    const context = await browser.newContext({
+      userAgent:
+        options.userAgent ||
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      viewport: options.viewport || { width: 1280, height: 800 },
+    });
+
+    return {
+      context,
+      release: async () => {
+        await context.close().catch((err) => console.warn('[BrowserPool] Warning:', err));
+        await browser.close().catch((err) => console.warn('[BrowserPool] Warning:', err));
+      },
+    };
+  }
 
   async acquire(platform: string, browserName: string): Promise<BrowserContext> {
     const key = `${platform}_${browserName}`;
