@@ -4,6 +4,20 @@ import type { DouYinPluginConfig } from './types.js';
 
 const logger = createLogger('DouYinVisit');
 
+export async function navigateAndWaitLoaded(
+  page: Page,
+  url: string,
+  pageLoadWaitMs: number,
+): Promise<void> {
+  logger.debug('Navigating to DouYin page', { url, pageLoadWaitMs });
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {
+    logger.debug('load event timed out, continuing');
+  });
+  await page.waitForTimeout(pageLoadWaitMs);
+  logger.debug('Initial page load wait completed', { url, pageLoadWaitMs });
+}
+
 /**
  * 导航到抖音页面并等待 SPA 内容挂载完成。
  *
@@ -15,11 +29,5 @@ export async function visitAndWaitLoaded(
   url: string,
   config: DouYinPluginConfig,
 ): Promise<void> {
-  logger.debug('Navigating to DouYin page', { url });
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-  await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {
-    logger.debug('load event timed out, continuing');
-  });
-  await page.waitForTimeout(config.listPageLoadWaitMs);
-  logger.debug('Initial page load wait completed', { url });
+  await navigateAndWaitLoaded(page, url, config.listPageLoadWaitMs);
 }

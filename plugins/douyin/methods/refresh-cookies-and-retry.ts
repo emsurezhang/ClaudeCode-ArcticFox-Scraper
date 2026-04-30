@@ -3,9 +3,39 @@ import { createLogger } from '../../../src/core/logger.js';
 import { DOUYIN_DOMAIN_FILTER } from './types.js';
 import type { DouYinPluginConfig, DouYinScrapeOptions } from './types.js';
 import { isLoggedIn, requiresCookieRecovery } from './is-logged-in.js';
-import { visitAndWaitLoaded } from './visit-and-wait-loaded.js';
+import { navigateAndWaitLoaded } from './visit-and-wait-loaded.js';
 
 const logger = createLogger('DouYinCookieRecovery');
+
+export async function ensurePageAccessible(
+  page: Page,
+  context: BrowserContext,
+  options: DouYinScrapeOptions,
+  url: string,
+  config: DouYinPluginConfig,
+  pageLoadWaitMs: number = config.listPageLoadWaitMs,
+): Promise<void> {
+  await navigateAndWaitLoaded(page, url, pageLoadWaitMs);
+
+  const status = await isLoggedIn(page);
+  if (!requiresCookieRecovery(status)) {
+    return;
+  }
+
+  logger.warn('Detected captcha or login redirect after navigation, refreshing cookies', status);
+  const recovered = await refreshCookiesAndRetry(
+    page,
+    context,
+    options,
+    url,
+    config,
+    pageLoadWaitMs,
+  );
+
+  if (!recovered) {
+    throw new Error('DouYin page entered captcha/login flow and cookie refresh did not recover access');
+  }
+}
 
 /**
  * 使用 CookieManager 重新提取 cookies 并重试页面加载，然后检测登录是否恢复。
@@ -18,6 +48,7 @@ export async function refreshCookiesAndRetry(
   options: DouYinScrapeOptions,
   url: string,
   config: DouYinPluginConfig,
+  pageLoadWaitMs: number = config.listPageLoadWaitMs,
 ): Promise<boolean> {
   logger.info('Starting cookie refresh and retry flow');
 
@@ -41,7 +72,7 @@ export async function refreshCookiesAndRetry(
   }
 
   logger.debug('Cookie refresh succeeded, retrying page load');
-  await visitAndWaitLoaded(page, url, config);
+  await navigateAndWaitLoaded(page, url, pageLoadWaitMs);
 
   const status = await isLoggedIn(page);
   const recovered = !requiresCookieRecovery(status);

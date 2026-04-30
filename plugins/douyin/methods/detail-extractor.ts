@@ -8,6 +8,7 @@ import { WhisperTranscriber } from '../../../src/utils/whisper-transcriber.js';
 import { createLogger } from '../../../src/core/logger.js';
 import type { DouYinDetailExtractResult, DouYinPluginConfig, DouYinScrapeOptions } from './types.js';
 import { BROWSER_UA } from './types.js';
+import { ensurePageAccessible } from './refresh-cookies-and-retry.js';
 
 const logger = createLogger('DouYinDetailExtractor');
 
@@ -23,7 +24,7 @@ export async function detailExtractor(
   context: BrowserContext,
   config: DouYinPluginConfig,
 ): Promise<DouYinDetailExtractResult> {
-  const capture = await captureAndDownloadAudio(url, outputDir, context, config);
+  const capture = await captureAndDownloadAudio(url, options, outputDir, context, config);
 
   const metadata = capture.metadata;
   let finalAudioPath: string | undefined = capture.audioPath;
@@ -80,6 +81,7 @@ export async function detailExtractor(
 
 async function captureAndDownloadAudio(
   pageUrl: string,
+  options: DouYinScrapeOptions,
   outputDir: string,
   context: BrowserContext,
   config: DouYinPluginConfig,
@@ -146,11 +148,14 @@ async function captureAndDownloadAudio(
       }
     });
 
-    await page.goto(pageUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 45000,
-    });
-    await page.waitForTimeout(config.detailDomReadyWaitMs);
+    await ensurePageAccessible(
+      page,
+      context,
+      options,
+      pageUrl,
+      config,
+      config.detailDomReadyWaitMs,
+    );
 
     if (!audioUrl) {
       await Promise.race([capturePromise, page.waitForTimeout(config.detailCaptureTimeoutMs)]);

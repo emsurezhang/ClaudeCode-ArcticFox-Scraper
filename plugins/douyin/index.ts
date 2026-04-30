@@ -5,7 +5,7 @@ import type { IPlatformPlugin, ScrapeResult } from '../../src/interfaces/index.j
 import { createLogger } from '../../src/core/logger.js';
 import { detailExtractor } from './methods/detail-extractor.js';
 import { listExtractor } from './methods/list-extractor.js';
-import { visitAndWaitLoaded } from './methods/visit-and-wait-loaded.js';
+import { ensurePageAccessible } from './methods/refresh-cookies-and-retry.js';
 import {
   BROWSER_UA,
   DOUYIN_DOMAIN_FILTER,
@@ -117,7 +117,7 @@ export default class DouYinPlugin implements IPlatformPlugin {
       }
 
       page = await allocation.context.newPage();
-      await visitAndWaitLoaded(page, url, this.config);
+      await ensurePageAccessible(page, allocation.context, options, url, this.config);
 
       const extracted = await listExtractor(page, this.config, maxItems);
       logger.info(`List scrape completed for ${url}, collected ${extracted.videos.length} videos`);
