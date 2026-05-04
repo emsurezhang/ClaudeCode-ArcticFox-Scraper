@@ -229,7 +229,13 @@ export default class DouYinPlugin implements IPlatformPlugin {
     const pw = await getPlaywright();
     const browser = await pw.chromium.launch({
       headless: !options.debug,
-      args: ['--disable-blink-features=AutomationControlled'],
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--autoplay-policy=no-user-gesture-required',
+          '--disable-background-media-suspend',
+          '--disable-background-timer-throttling',
+          '--disable-renderer-backgrounding',
+        ],
     });
     const context = await browser.newContext({
       viewport: { width: 1366, height: 900 },

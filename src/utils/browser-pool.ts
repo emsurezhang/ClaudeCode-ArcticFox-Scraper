@@ -34,7 +34,13 @@ export class BrowserPool implements IBrowserPool {
 
     const browser = await chromium.launch({
       headless: options.headless ?? true,
-      args: ['--disable-blink-features=AutomationControlled'],
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--autoplay-policy=no-user-gesture-required',
+          '--disable-background-media-suspend',
+          '--disable-background-timer-throttling',
+          '--disable-renderer-backgrounding',
+        ],
     });
 
     const context = await browser.newContext({
@@ -64,7 +70,16 @@ export class BrowserPool implements IBrowserPool {
     }
 
     if (!this.browser) {
-      this.browser = await chromium.launch({ headless: true });
+      this.browser = await chromium.launch({
+        headless: true,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--autoplay-policy=no-user-gesture-required',
+          '--disable-background-media-suspend',
+          '--disable-background-timer-throttling',
+          '--disable-renderer-backgrounding',
+        ],
+      });
     }
 
     const ctx = await this.browser.newContext({

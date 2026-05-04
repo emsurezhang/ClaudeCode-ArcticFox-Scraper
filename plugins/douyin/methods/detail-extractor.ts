@@ -122,13 +122,31 @@ async function captureAndDownloadAudio(
             metadata.duration = detail.duration;
             metadata.coverUrl = detail.video?.cover?.url_list?.[0];
             metadata.createTime = detail.create_time;
+            // Prefer the dedicated music/audio track; fall back to the video stream
+            // (ffmpeg will strip the video track during conversion).
+            const candidateAudioUrl =
+              detail.music?.play_url?.url_list?.[0] ??
+              detail.video?.play_addr?.url_list?.[0];
+            if (candidateAudioUrl && !audioUrl) {
+              metadata.apiAudioUrl = candidateAudioUrl;
+            }
           }
         } catch {
           // Ignore parse errors from noisy API responses.
         }
       }
 
-      if (!responseUrl.includes('douyinvod') || !responseUrl.includes('media-audio')) {
+      // Accept any douyinvod CDN response that looks like an audio stream.
+      // DouYin has used several URL path patterns for the audio segment:
+      //   - /media-audio/ (older, still common)
+      //   - /audio/        (newer)
+      //   - -audio- / _audio_  (mux naming variants)
+      const isAudioStream =
+        responseUrl.includes('media-audio') ||
+        responseUrl.includes('/audio/') ||
+        responseUrl.includes('-audio-') ||
+        responseUrl.includes('_audio_');
+      if (!responseUrl.includes('douyinvod') || !isAudioStream) {
         return;
       }
 
@@ -158,6 +176,32 @@ async function captureAndDownloadAudio(
     );
 
     if (!audioUrl) {
+        await page.waitForSelector('video', { timeout: 10000 }).catch(() => {
+          logger.debug('No <video> element appeared before playback trigger timeout');
+        });
+
+        // Trigger muted playback in headless mode so Chromium will start the
+        // media pipeline and emit the audio/video CDN request without a user gesture.
+        await page.evaluate(async () => {
+          const video = document.querySelector('video');
+          if (!video) {
+            return;
+          }
+
+          video.muted = true;
+          video.volume = 0;
+          video.setAttribute('playsinline', 'true');
+
+          try {
+            await video.play();
+          } catch {
+            video.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            await video.play().catch(() => undefined);
+          }
+        }).catch(() => {
+          logger.debug('Playback trigger failed before capture timeout');
+        });
+
       await Promise.race([capturePromise, page.waitForTimeout(config.detailCaptureTimeoutMs)]);
     }
 
@@ -179,7 +223,16 @@ async function captureAndDownloadAudio(
     }
 
     if (!audioUrl) {
-      throw new Error('No audio URL captured from network responses');
+      const apiAudioUrl = metadata.apiAudioUrl as string | undefined;
+      if (apiAudioUrl) {
+        logger.warn(
+          'CDN audio stream not intercepted; downloading from API-provided URL',
+          { apiAudioUrl },
+        );
+        audioUrl = apiAudioUrl;
+      } else {
+        throw new Error('No audio URL captured from network responses');
+      }
     }
 
     const requestHeaders: Record<string, string> = {
