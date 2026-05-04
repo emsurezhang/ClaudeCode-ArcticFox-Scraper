@@ -10,6 +10,9 @@ cache/
 # Whisper models (large binary files, download separately)
 models/
 
+# Runtime logs
+logs/
+
 # OS files
 .DS_Store
 
